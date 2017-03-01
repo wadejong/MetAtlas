@@ -1,7 +1,8 @@
-*inp
-*out
-*tmp
-*gbw
-*opt
-*prop
-*trj
+scr/*inp
+scr/*out
+scr/*tmp
+scr/*gbw
+scr/*opt
+scr/*prop
+scr/*trj
+scr/*xyz
