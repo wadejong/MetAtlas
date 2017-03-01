@@ -6,12 +6,12 @@
 
 import openbabel, uuid, csv, subprocess, pymongo, bson
   
-obConversion = openbabel.OBConversion()
-obConversion.SetInAndOutFormats('inchi','xyz')
-obBuilder = openbabel.OBBuilder()
-obMolecule = openbabel.OBMol()
+obc = openbabel.OBConversion()
+obc.SetInAndOutFormats('inchi','xyz')
+b = openbabel.OBBuilder()
+m = openbabel.OBMol()
 obElementTable = openbabel.OBElementTable()
-obForceField = openbabel.OBForceField.FindForceField('UFF')
+obf = openbabel.OBForceField.FindForceField('UFF')
 
 #
 # Goal is to store the data in database, here trying MongoDb
@@ -39,7 +39,7 @@ def numberOfElectrons(myMolecule):
 def createInput(myMolecule):
   myCharge = myMolecule.GetTotalCharge()
   myMult = (1 if (numberOfElectrons(myMolecule)+myCharge) % 2 == 0 else 2)
-  inputFileName = str(uuid.uuid4())+'.inp'
+  inputFileName = 'scr/'+str(uuid.uuid4())+'.inp'
   inputFile = open(inputFileName,'w')
   inputFile.write('!PM3 Opt \n%coords \n  CTyp xyz\n')
   inputFile.write(' Charge '+str(myCharge)+'\n Mult '+str(myMult)+' \n coords\n')
@@ -59,6 +59,7 @@ def calculateEnergy(myInputFileName):
   myOutputFileName = myInputFileName.strip('inp')+'out'
   myOutput = open(myOutputFileName,'wb')
   subprocess.call(['../../orca_3_0_3/orca',myInputFileName],stdout=myOutput)
+  #subprocess.call(['mpirun.openmpi', '-np', '4', '../../orca_3_0_3/orca',myInputFileName],stdout=myOutput)
   return(myOutputFileName)
 
 #
@@ -103,11 +104,11 @@ def getEnergy(myMolecule):
 #  Store data in MongoDb
 #
   mongoDocument['_id'] = myInputFileName.strip('.inp')
-  mongoDocument['parentInchi'] = obMolecule.GetTitle(inchiString)
-  mongoDocument['childInchi'] = obConversion.WriteString(myMolecule)
-  obConversion.SetOutFormat('smi')
-  mongoDocument['childSmiles'] = obConversion.WriteString(myMolecule)
-  obConversion.SetOutFormat('inchi')
+  mongoDocument['parentInchi'] = m.GetTitle(inchiString)
+  mongoDocument['childInchi'] = obc.WriteString(myMolecule)
+  obc.SetOutFormat('smi')
+  mongoDocument['childSmiles'] = obc.WriteString(myMolecule)
+  obc.SetOutFormat('inchi')
   mongoDocument['molecularFormula'] = myMolecule.GetFormula()
   moleculeObj['atoms'] = atomsObj
   mongoDocument['molecule'] = moleculeObj
@@ -122,62 +123,62 @@ def getEnergy(myMolecule):
 # Find protonation sites
 #
 
-with open('metatlas_inchi_inchikey.csv',newline='') as csvFile:
+with open('metatlas_inchi_inchikey.csv') as csvFile:
  csvReader = csv.reader(csvFile)
  for csvRow in csvReader:
    speciesNumber,inchiString,inchiKey = csvRow[0],csvRow[1],csvRow[2]
    print(inchiString)
-   obConversion.SetInAndOutFormats('smi','xyz')
-   obConversion.ReadString(obMolecule,inchiString)
+   obc.SetInAndOutFormats('inchi','xyz')
+   obc.ReadString(m,inchiString)
 # I need this line to have the correct number of hydrogens
-   moleculeFormula = obMolecule.GetFormula()
-   print(obMolecule.GetFormula())
-   print(obMolecule.NumAtoms())
-   print(obMolecule.NumConformers())
-   print(obConversion.WriteString(obMolecule))
-   obMolecule.AddHydrogens()
-   obBuilder.Build(obMolecule)
-   print(obMolecule.GetFormula())
-   print(obMolecule.NumAtoms())
-   print(obMolecule.NumConformers())
-   print(obMolecule.Has2D())
-   print(obMolecule.Has3D())
-   obConversion.WriteFile(obMolecule,'test.xyz')
-#   obForceField.Setup(obMolecule)
-#   obForceField.ConjugateGradients(1000,1.0e-6)
-#   obForceField.UpdateCoordinates(obMolecule)
-   obMolecule.SetTitle(inchiString)
-   neutralEnergy = getEnergy(obMolecule)
+   formula = m.GetFormula()
+   print(m.GetFormula())
+   print(m.NumAtoms())
+   print(m.NumConformers())
+   print(obc.WriteString(m))
+   m.AddHydrogens()
+   b.Build(m)
+   print(m.GetFormula())
+   print(m.NumAtoms())
+   print(m.NumConformers())
+   print(m.Has2D())
+   print(m.Has3D())
+   obc.WriteFile(m, 'xyz/'+formula+'.xyz')
+#   obf.Setup(m)
+#   obf.ConjugateGradients(1000,1.0e-6)
+#   obf.UpdateCoordinates(m)
+   m.SetTitle(inchiString)
+   neutralEnergy = getEnergy(m)
    protonatedEnergy, deprotonatedEnergy = 0.0, 0.0
    protonatedAtom, deprotonatedAtom = 0, 0
 #
 # Deprotonate
 #
-   for obAtom in openbabel.OBMolAtomIter(obMolecule):
-     if obAtom.IsHydrogen:
-       modifiedMolecule = openbabel.OBMol(obMolecule)
-       modifiedMolecule.DeleteAtom(obAtom)
-       modifiedMolecule.SetTotalCharge(obMolecule.GetTotalCharge()-1)
-       calculatedEnergy = getEnergy(modifiedMolecule)
-       if calculatedEnergy < deprotonationEnergy:
-         deprotonationEnergy = calculatedEnergy
-         for connectedAtom in openbabel.OBAtomAtomIter(obAtom):
+   for atom in openbabel.OBMolAtomIter(m):
+     if atom.IsHydrogen:
+       mm = openbabel.OBMol(m)
+       mm.DeleteAtom(atom)
+       mm.SetTotalCharge(m.GetTotalCharge()-1)
+       egy = getEnergy(mm)
+       if egy < deprotonationEnergy:
+         deprotonationEnergy = egy
+         for connectedAtom in openbabel.OBAtomAtomIter(atom):
            deprotonatedAtom = connectedAtom.GetIdx()
-       print('deprotonation',calculatedEnergy)
+       print('deprotonation',egy)
      else:
 #
 # Protonate, still needs work to make this go
 #
-       obAtom.IncrementImplicitValence()
-       obMolecule.AddHydrogens(obAtom)
-       totalCharge = obMolecule.GetTotalCharge()
-       obMolecule.SetTotalCharge(totalCharge+1)
-       calculatedEnergy = getEnergy(obMolecule)
-       if calculatedEnergy < protonationEnergy:
-         protonationEnergy = calculatedEnergy
-         protonatedAtom = obAtom.GetIdx()
-       atomToDelete = obMolecule.getAtom(obMolecule.NumAtoms())
-       obMolecule.DeleteAtom(atomToDelete)
-       obMolecule.SetTotalCharge(totalCharge)
-       print('protonation',calculatedEnergy)
+       atom.IncrementImplicitValence()
+       m.AddHydrogens(atom)
+       totalCharge = m.GetTotalCharge()
+       m.SetTotalCharge(totalCharge+1)
+       egy = getEnergy(m)
+       if egy < protonationEnergy:
+         protonationEnergy = egy
+         protonatedAtom = atom.GetIdx()
+       atomToDelete = m.getAtom(m.NumAtoms())
+       m.DeleteAtom(atomToDelete)
+       m.SetTotalCharge(totalCharge)
+       print('protonation',egy)
    print('lowest (de)protonation',deprotonationEnergy,protonationEnergy)
