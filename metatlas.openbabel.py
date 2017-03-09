@@ -4,7 +4,7 @@
 # Using OpenBabel as the toolkit to generate protonated and deprotonated structures
 #
 
-import openbabel
+import openbabel as ob
 import uuid
 import csv
 import subprocess 
@@ -17,93 +17,99 @@ def mySplit(s, nvars):
 
 def get_n_electrons(m):
   electron_count = 0
-  for a in openbabel.OBMolAtomIter(m):
+  for a in ob.OBMolAtomIter(m):
     electron_count += a.GetAtomicNum()
   return(electron_count)
 
 def create_orca_input(m):
     charge = m.GetTotalCharge()
     mult = (1 if (get_n_electrons(m)+charge) % 2 == 0 else 2)
-    input_name = 'scr/'+str(uuid.uuid4())+'.inp'
+    input_name = 'scr/'+m.GetFormula()+'.inp'
     inp = open(input_name,'w')
     inp.write('!PM3 Opt \n%coords \n  CTyp xyz\n')
     inp.write(' Charge '+str(charge)+'\n Mult '+str(mult)+' \n coords\n')
-    for atom in openbabel.OBMolAtomIter(m):
-        inp.write('  '+obet.GetSymbol(atom.GetAtomicNum())+' '+str(atom.GetX())+' '+str(atom.GetY())+' '+str(atom.GetZ())+' \n')
+    for atom in ob.OBMolAtomIter(m):
+        inp.write('  '+obet.GetSymbol(atom.GetAtomicNum())+' '
+                +str(atom.GetX())+' '+str(atom.GetY())+' '+str(atom.GetZ())+' \n')
     inp.write(' end\nend\n')
     inp.write('%geom\n MaxIter 200\n end\n')
+    inp.write('%scf\n MaxIter 1500\n end\n')
     inp.close()
-    db['calculationSetup'] = { "molecularSpinMultiplicity" : mult, "charge" : charge, "numberOfElectrons" : get_n_electrons(m), "waveFunctionTheory" : "PM3" } 
+    db['calculationSetup'] = { "molecularSpinMultiplicity" : mult, 
+            "charge" : charge, 
+            "numberOfElectrons" : get_n_electrons(m), 
+            "waveFunctionTheory" : "PM3" } 
+    subprocess.call(['cp',input_name,'inp'+input_name.strip('scr')])
     return(input_name) 
-#
-# Run Orca with generated input
-#
 
 def calculate_energy(fname, np):
     outfile = fname.strip('inp')+'out'
     out = open(outfile,'w')
     if np > 1:
         subprocess.call(['mpirun.openmpi', '-np', str(np), \
-         '../../orca_3_0_3/orca',myInputFileName],stdout=myOutput)
+         '../../orca_3_0_3/orca',fname],stdout=myOutput)
     else:
         subprocess.call(['../../orca_3_0_3/orca',fname],stdout=out)
     return(outfile) 
-#
-# Get energy for given structure and charge
-#
 
 def get_energy(m):
+    mongoClient = pymongo.MongoClient()
+    mongoDB = mongoClient.test.metatlas
     fname = create_orca_input(m)
-    output_fname = calculate_energy(fname, np)
-    output = open(output_fname,'r')
-    o = output.readline()
-    mol = {}
-    atoms = []
-    egy = 0.0
-    while o:
-        if o.find('THE OPTIMIZATION HAS CONVERGED')>=0:
-            while o: 
-                if o.find('CARTESIAN COORDINATES')>=0:
-                    o = output.readline()
-                    o = output.readline()
-                    while o:
-                        atom = {}
-                        atomName,xcoord,ycoord,zcoord = mySplit(o,4)
-                        if atomName == None: 
-                            break
-                        else:
-                            atom['elementSymbol'] = atomName
-                            atom['cartesianCoordinates'] = \
-                                    { 'value' : [xcoord, ycoord, zcoord], 'units' : 'Angstrom' }
-                            atoms.append(atom)
-                            o = output.readline()
-                            while o:
-                                if o.find('Total Energy')>=0:
-                                    egy = o.split()[3]
-                            break
-                        o = output.readline()
-                    break
-                o = output.readline()
-            break
-        o = output.readline()
-#
-#  Store data in MongoDb
-#
     db['_id'] = fname.strip('.inp')
-    db['parentInchi'] = m.GetTitle(mol_string)
-    db['childInchi'] = obc.WriteString(m)
-    obc.SetOutFormat('smi')
-    db['childSmiles'] = obc.WriteString(m)
-    obc.SetOutFormat('inchi')
-    db['molecularFormula'] = m.GetFormula()
-    mol['atoms'] = atoms
-    db['molecule'] = mol
-    db['totalEnergy'] = {"value":egy, "units":"Hartree"}
-    insertResult = mongoDB.metatlas.insert_one(db)
-    return(egy)
+    c = mongoDB.find({db['_id']: {"$exists":"true"}}).limit(1)
+    if c.count() > 0: 
+        print 'database entry ', db['_id'], ' found. moving on.'
+        egy = 0.0
+    else:
+        output_fname = calculate_energy(fname, np)
+        mol = {}
+        atoms = []
+        egy = 0.0
+        converged = False
+        with open(output_fname,'r') as output:
+            for line in output:
+                if 'THE OPTIMIZATION HAS CONVERGED' in line: 
+                    converged = True
 
-def protonate_molecule():
-    pass
+                if converged:
+                    if 'CARTESIAN COORDINATES (ANGSTROEM)' in line:
+                        start_atoms = True
+
+                    if start_atoms:
+                        if '----------' in line or line == '\n':
+                            start_atoms = False
+                        else:
+                            atom = {}
+                            atomName,xcoord,ycoord,zcoord = mySplit(o,4)
+                            if atomName == None: 
+                                break
+                            else:
+                                atom['elementSymbol'] = atomName
+                                atom['cartesianCoordinates'] = \
+                                        { 'value' : [xcoord, ycoord, zcoord], 'units' : 'Angstrom' }
+                                atoms.append(atom)
+
+                    if 'Total Energy' in line:
+                        egy = o.split()[3]
+
+        if egy:
+        #    db['parentInchi'] = m.GetTitle(mol_string)
+            db['childInchi'] = obc.WriteString(m)
+            obc.SetOutFormat('smi')
+            db['childSmiles'] = obc.WriteString(m)
+            obc.SetOutFormat('inchi')
+            db['molecularFormula'] = m.GetFormula()
+            mol['atoms'] = atoms
+            db['molecule'] = mol
+            db['totalEnergy'] = {"value":egy, "units":"Hartree"}
+
+            insertResult = mongoDB.insert_one(db)
+        else:
+            print "no energy was found"
+            return None
+
+    return(egy)
 
 def read_molecules_from_csv(fname):
     mols = {}
@@ -115,86 +121,75 @@ def read_molecules_from_csv(fname):
     return mols
 
 def perform_work(mol_string):
+
     obc.ReadString(m,mol_string)
-    # I need this line to have the correct number of hydrogens
     formula = m.GetFormula()
-    #   print(m.GetFormula())
-    #   print(m.NumAtoms())
-    #   print(m.NumConformers())
-    #   print(obc.WriteString(m))
     m.AddHydrogens()
     b.Build(m)
-    print(m.GetFormula())
-    print(m.NumAtoms())
-    print(m.NumConformers())
-    print(m.Has2D())
-    print(m.Has3D())
+    print m.GetFormula(), str(m.NumAtoms())+'atoms'
     obc.WriteFile(m, 'xyz/'+formula+'.xyz')
-    #   obf.Setup(m)
-    #   obf.ConjugateGradients(1000,1.0e-6)
-    #   obf.UpdateCoordinates(m)
     m.SetTitle(mol_string)
     neutralEnergy = get_energy(m)
     protonatedEnergy, deprotonatedEnergy = 0.0, 0.0
     protonatedAtom, deprotonatedAtom = 0, 0
     
-    for atom in openbabel.OBMolAtomIter(m):
-        if atom.IsHydrogen:# Deprotonate
-            mm = openbabel.OBMol(m)
-            print 'deprotonating atom', mm.GetFormula()
-            mm.DeleteAtom(atom)
-            mm.SetTotalCharge(m.GetTotalCharge()-1)
-            try:
-                egy = get_energy(mm)
-            except:
-                print "failed to assign deprot energy"
-                
-            if egy < deprotonatedEnergy:
-                deprotonatedEnergy = egy
-            for connectedAtom in openbabel.OBAtomAtomIter(atom):
-                deprotonatedAtom = connectedAtom.GetIdx()
-                print('deprotonation',egy)
-        else:
-            protonate_molecule()
-    #    #
-    #    # Protonate, still needs work to make this go
-    #    #
-    #           atom.IncrementImplicitValence()
-    #           m.AddHydrogens(atom)
-    #           totalCharge = m.GetTotalCharge()
-    #           m.SetTotalCharge(totalCharge+1)
-    #           egy = getEnergy(m)
-    #           if egy < protonationEnergy:
-    #             protonatedEnergy = egy
-    #             protonatedAtom = atom.GetIdx()
-    #           atomToDelete = m.getAtom(m.NumAtoms())
-    #           m.DeleteAtom(atomToDelete)
-    #           m.SetTotalCharge(totalCharge)
-    #           print('protonation',egy)
+#    Parallel(n_jobs=8)(delayed(deprotonate)(m, atom) \
+#            for atom in ob.OBMolAtomIter(m) if atom.IsHydrogen)
+
+#    Parallel(n_jobs=8)(delayed(protonate)(m, atom) \
+#            for atom in ob.OBMolAtomIter(m) if not atom.IsHydrogen)
+
     print('lowest (de)protonation',deprotonatedEnergy,protonatedEnergy)
 
-#
-# Main routine reads metatlas inchi and converts to xyz
-# Optimize structure
-# Find deprotonation sites
-# Find protonation sites
-#
+def protonate(m, atom):
+    mm = ob.OBMol(m)
+    atom.IncrementImplicitValence()
+    mm.AddHydrogens(atom)
+    print 'protonating atom', mm.GetFormula()
+    totalCharge = m.GetTotalCharge()
+    m.SetTotalCharge(totalCharge+1)
+    egy = getEnergy(m)
+    if egy < protonationEnergy:
+        protonatedEnergy = egy
+        protonatedAtom = atom.GetIdx()
+    atomToDelete = m.getAtom(m.NumAtoms())
+    m.DeleteAtom(atomToDelete)
+    m.SetTotalCharge(totalCharge)
+    print('protonation',egy)
+
+def deprotonate(m, atom):
+    mm = ob.OBMol(m)
+    mm.DeleteAtom(atom)
+    print 'deprotonating atom', mm.GetFormula()
+    mm.SetTotalCharge(m.GetTotalCharge()-1)
+    try:
+        egy = get_energy(mm)
+    except:
+        print "failed to assign deprot energy"
+        
+    if egy < deprotonatedEnergy:
+        deprotonatedEnergy = egy
+    for connectedAtom in ob.OBAtomAtomIter(atom):
+        deprotonatedAtom = connectedAtom.GetIdx()
+        print('deprotonation',egy)
 
 if __name__ == "__main__":
-    obc = openbabel.OBConversion()
+    obc = ob.OBConversion()
     obc.SetInAndOutFormats('inchi','xyz')
-    obet = openbabel.OBElementTable()
-    obf = openbabel.OBForceField.FindForceField('UFF')
-    b = openbabel.OBBuilder()
-    m = openbabel.OBMol()
+    obet = ob.OBElementTable()
+    obf = ob.OBForceField.FindForceField('UFF')
+    b = ob.OBBuilder()
+    m = ob.OBMol()
 
-    mongoClient = pymongo.MongoClient()
-    mongoDB = mongoClient.test    
-    db = {} 
-    csv_file = 'metatlas_inchi_inchikey.csv'
-
+    csv_file = 'metatlas_inchi_inchikey.csv' 
     mols = read_molecules_from_csv(csv_file)
 
     np =1
-    for key, string in mols.iteritems():
-        perform_work(string)
+    db = {}
+#    for _, mol_string in mols.iteritems():
+#        perform_work(mol_string)
+#    Parallel(n_jobs=8)(delayed(perform_work)(mol_string) \
+#            for _, mol_string in mols.iteritems())
+
+    with Parallel(n_jobs=8, verbose=5) as p:
+        p(delayed(perform_work)(mol_string) for _, mol_string in mols.iteritems())
