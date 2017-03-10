@@ -21,7 +21,7 @@ def get_n_electrons(m):
     electron_count += a.GetAtomicNum()
   return(electron_count)
 
-def create_orca_input(m):
+def create_orca_input(m, db):
     charge = m.GetTotalCharge()
     mult = (1 if (get_n_electrons(m)+charge) % 2 == 0 else 2)
     input_name = 'scr/'+m.GetFormula()+'.inp'
@@ -52,21 +52,20 @@ def calculate_energy(fname, np):
         subprocess.call(['../../orca_3_0_3/orca',fname],stdout=out)
     return(outfile) 
 
-def get_energy(m):
-    mongoClient = pymongo.MongoClient()
-    mongoDB = mongoClient.test.metatlas
-    fname = create_orca_input(m)
-    db['_id'] = fname.strip('.inp')
+def get_energy(m, f, db, mongoDB):
+    db['_id'] = f.strip('.inp')
     c = mongoDB.find({db['_id']: {"$exists":"true"}}).limit(1)
     if c.count() > 0: 
         print 'database entry ', db['_id'], ' found. moving on.'
         egy = 0.0
     else:
-        output_fname = calculate_energy(fname, np)
+        output_fname = calculate_energy(f, np)
         mol = {}
         atoms = []
         egy = 0.0
         converged = False
+        start_atoms = False
+        legy = False
         with open(output_fname,'r') as output:
             for line in output:
                 if 'THE OPTIMIZATION HAS CONVERGED' in line: 
@@ -77,7 +76,9 @@ def get_energy(m):
                         start_atoms = True
 
                     if start_atoms:
-                        if '----------' in line or line == '\n':
+                        if '----------' in line:
+                            pass
+                        elif line == '\n':
                             start_atoms = False
                         else:
                             atom = {}
@@ -92,8 +93,10 @@ def get_energy(m):
 
                     if 'Total Energy' in line:
                         egy = o.split()[3]
+                        legy = True
 
-        if egy:
+        if legy:
+            print 'thank god an energy was found -- adding to DB'
         #    db['parentInchi'] = m.GetTitle(mol_string)
             db['childInchi'] = obc.WriteString(m)
             obc.SetOutFormat('smi')
@@ -104,11 +107,17 @@ def get_energy(m):
             db['molecule'] = mol
             db['totalEnergy'] = {"value":egy, "units":"Hartree"}
 
-            insertResult = mongoDB.insert_one(db)
+            try:
+                insert = mongoDB.insert_one(db)
+            except pymongo.errors.OperationError:
+                print "failed to add energy to database"
+            else:
+                print "successfully added energy to database"
         else:
-            print "no energy was found"
-            return None
+            print "no energy was found for ", m.GetFormula()
+            egy = get_energy(m, f, db, mongoDB)
 
+    print 'get_energy is returning properly'
     return(egy)
 
 def read_molecules_from_csv(fname):
@@ -120,35 +129,14 @@ def read_molecules_from_csv(fname):
             mols[inchiKey] = inchiString
     return mols
 
-def perform_work(mol_string):
-
-    obc.ReadString(m,mol_string)
-    formula = m.GetFormula()
-    m.AddHydrogens()
-    b.Build(m)
-    print m.GetFormula(), str(m.NumAtoms())+'atoms'
-    obc.WriteFile(m, 'xyz/'+formula+'.xyz')
-    m.SetTitle(mol_string)
-    neutralEnergy = get_energy(m)
-    protonatedEnergy, deprotonatedEnergy = 0.0, 0.0
-    protonatedAtom, deprotonatedAtom = 0, 0
-    
-#    Parallel(n_jobs=8)(delayed(deprotonate)(m, atom) \
-#            for atom in ob.OBMolAtomIter(m) if atom.IsHydrogen)
-
-#    Parallel(n_jobs=8)(delayed(protonate)(m, atom) \
-#            for atom in ob.OBMolAtomIter(m) if not atom.IsHydrogen)
-
-    print('lowest (de)protonation',deprotonatedEnergy,protonatedEnergy)
-
-def protonate(m, atom):
+def protonate(m, atom, db):
     mm = ob.OBMol(m)
     atom.IncrementImplicitValence()
     mm.AddHydrogens(atom)
     print 'protonating atom', mm.GetFormula()
     totalCharge = m.GetTotalCharge()
     m.SetTotalCharge(totalCharge+1)
-    egy = getEnergy(m)
+    egy = getEnergy(m, db, mongoDB)
     if egy < protonationEnergy:
         protonatedEnergy = egy
         protonatedAtom = atom.GetIdx()
@@ -157,13 +145,13 @@ def protonate(m, atom):
     m.SetTotalCharge(totalCharge)
     print('protonation',egy)
 
-def deprotonate(m, atom):
+def deprotonate(m, atom, db):
     mm = ob.OBMol(m)
     mm.DeleteAtom(atom)
     print 'deprotonating atom', mm.GetFormula()
     mm.SetTotalCharge(m.GetTotalCharge()-1)
     try:
-        egy = get_energy(mm)
+        egy = get_energy(mm, db, mongoDB)
     except:
         print "failed to assign deprot energy"
         
@@ -173,23 +161,41 @@ def deprotonate(m, atom):
         deprotonatedAtom = connectedAtom.GetIdx()
         print('deprotonation',egy)
 
+def perform_work(mol_string):
+    db = {} 
+    mongoClient = pymongo.MongoClient()
+    mongoDB = mongoClient.test.metatlas
+
+    m = ob.OBMol()
+    m.SetTitle(mol_string)
+    obc.ReadString(m,mol_string)
+    m.AddHydrogens()
+    b.Build(m)
+    obc.WriteFile(m, 'xyz/'+m.GetFormula()+'.xyz')
+    print m.GetFormula(), str(m.NumAtoms())+' atoms'
+
+    fname = create_orca_input(m, db)
+    egy_neutral = get_energy(m, fname, db, mongoDB)
+
+    print 'energy =', egy_neutral
+
+#    Parallel(n_jobs=8)(delayed(deprotonate)(m, atom) \
+#            for atom in ob.OBMolAtomIter(m) if atom.IsHydrogen)
+
+#    Parallel(n_jobs=8)(delayed(protonate)(m, atom) \
+#            for atom in ob.OBMolAtomIter(m) if not atom.IsHydrogen)
+
 if __name__ == "__main__":
     obc = ob.OBConversion()
     obc.SetInAndOutFormats('inchi','xyz')
     obet = ob.OBElementTable()
-    obf = ob.OBForceField.FindForceField('UFF')
     b = ob.OBBuilder()
-    m = ob.OBMol()
 
     csv_file = 'metatlas_inchi_inchikey.csv' 
     mols = read_molecules_from_csv(csv_file)
 
     np =1
-    db = {}
-#    for _, mol_string in mols.iteritems():
-#        perform_work(mol_string)
-#    Parallel(n_jobs=8)(delayed(perform_work)(mol_string) \
-#            for _, mol_string in mols.iteritems())
 
     with Parallel(n_jobs=8, verbose=5) as p:
-        p(delayed(perform_work)(mol_string) for _, mol_string in mols.iteritems())
+        p(delayed(perform_work)(mol_string) \
+                for _, mol_string in mols.iteritems())
