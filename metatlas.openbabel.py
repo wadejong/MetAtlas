@@ -5,15 +5,12 @@
 #
 
 import openbabel as ob
-import uuid
+import re
 import csv
 import subprocess 
 import pymongo
 import bson
 from joblib import Parallel, delayed
-  
-def mySplit(s, nvars):
-  return (s.split() + [None] * nvars)[:nvars] 
 
 def get_n_electrons(m):
   electron_count = 0
@@ -67,33 +64,43 @@ def get_energy(m, f, db, mongoDB):
         start_atoms = False
         legy = False
         with open(output_fname,'r') as output:
+            if 'THE OPTIMIZATION HAS CONVERGED' in output.read(): 
+                print "optimization converged"
+                converged = True
+            else:
+                egy = get_energy(m, f, db, mongoDB)
+
+        with open(output_fname,'r') as output:
+            print output_fname, 'file opened for parsing'
             for line in output:
-                if 'THE OPTIMIZATION HAS CONVERGED' in line: 
-                    converged = True
+                if 'CARTESIAN' in line and 'ANGSTROEM' in line:
+                    start_atoms = True
 
-                if converged:
-                    if 'CARTESIAN COORDINATES (ANGSTROEM)' in line:
-                        start_atoms = True
+                if start_atoms and 'CARTESIAN' not in line:
+                    if '----------' in line:
+                        pass
+                    elif line == '\n':
+                        start_atoms = False
+                    else:
+                        atom = {}
+                        match = re.search(r'\s*(?P<atom>[A-Z][a-z]*)'+
+                                        '\s*(?P<x>\-*[0-9]+\.[0-9]+)'+
+                                        '\s*(?P<y>\-*[0-9]+\.[0-9]+)'+
+                                        '\s*(?P<z>\-*[0-9]+\.[0-9]+)', line)
 
-                    if start_atoms:
-                        if '----------' in line:
-                            pass
-                        elif line == '\n':
-                            start_atoms = False
-                        else:
-                            atom = {}
-                            atomName,xcoord,ycoord,zcoord = mySplit(o,4)
-                            if atomName == None: 
-                                break
-                            else:
-                                atom['elementSymbol'] = atomName
-                                atom['cartesianCoordinates'] = \
-                                        { 'value' : [xcoord, ycoord, zcoord], 'units' : 'Angstrom' }
-                                atoms.append(atom)
+                        atom['elementSymbol'] = match.group('atom')
+                        coords = [ match.group(i) for i in ['x', 'y', 'z'] ]
+                        atom['cartesianCoordinates'] = \
+                                { 'value' : coords, 'units' : 'Angstrom' }
+                        atoms.append(atom) 
 
-                    if 'Total Energy' in line:
-                        egy = o.split()[3]
-                        legy = True
+                if 'Total Energy' in line:
+                    egy = line.split()[3]
+                    legy = True
+                    print "breaking out!"
+                    break 
+
+            print output_fname, 'file closed'
 
         if legy:
             print 'thank god an energy was found -- adding to DB'
@@ -195,7 +202,8 @@ if __name__ == "__main__":
     mols = read_molecules_from_csv(csv_file)
 
     np =1
-
     with Parallel(n_jobs=8, verbose=5) as p:
         p(delayed(perform_work)(mol_string) \
                 for _, mol_string in mols.iteritems())
+
+    #perform_work(mols['UCMIRNVEIXFBKS-UHFFFAOYSA-N'])
