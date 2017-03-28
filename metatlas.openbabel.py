@@ -25,6 +25,7 @@ def create_orca_input(m, db):
     mult = (1 if (get_n_electrons(m) + charge) % 2 == 0 else 2)
     input_name = 'scr/' + m.GetFormula() + '.inp'
     inp = open(input_name, 'w')
+    inp.write('%MaxCore 6000\n')
     inp.write('!SlowConv\n')
     inp.write('!NOSOSCF\n')
     inp.write('!PM3 Opt \n%coords \n  CTyp xyz\n')
@@ -60,74 +61,67 @@ def calculate_energy(fname):
 
 
 def get_energy(m, f, db):
-    db['_id'] = f.strip('.inp')
-    #c = mongoDB.find({db['_id']: {"$exists": "true"}}).limit(1)
-    #if c.count() > 0:
-    if False:
-        print 'database entry ', db['_id'], ' found. moving on.'
-        egy = 0.0
-    else:
-        output_fname = calculate_energy(f)
-        mol = {}
-        atoms = []
-        egy = 0.0
-        converged = False
-        start_atoms = False
-        legy = False
-        with open(output_fname, 'r') as output:
-            if 'THE OPTIMIZATION HAS CONVERGED' in output.read():
-                print "optimization converged"
-                converged = True
-            else:
-                egy = get_energy(m, f, db)
-
-        with open(output_fname, 'r') as output:
-            print output_fname, 'file opened for parsing'
-            for line in output:
-                if 'CARTESIAN' in line and 'ANGSTROEM' in line:
-                    start_atoms = True
-
-                if start_atoms and 'CARTESIAN' not in line:
-                    if '----------' in line:
-                        pass
-                    elif line == '\n':
-                        start_atoms = False
-                    else:
-                        atom = {}
-                        match = re.search(r'\s*(?P<atom>[A-Z][a-z]*)' +
-                                          r'\s*(?P<x>\-*[0-9]+\.[0-9]+)' +
-                                          r'\s*(?P<y>\-*[0-9]+\.[0-9]+)' +
-                                          r'\s*(?P<z>\-*[0-9]+\.[0-9]+)', line)
-
-                        atom['elementSymbol'] = match.group('atom')
-                        coords = [match.group(i) for i in ['x', 'y', 'z']]
-                        atom['cartesianCoordinates'] = \
-                                {'value' : coords, 'units' : 'Angstrom'}
-                        atoms.append(atom)
-
-                if 'Total Energy' in line:
-                    egy = line.split()[3]
-                    legy = True
-                    print "breaking out!"
-                    break
-
-            print output_fname, 'file closed'
-
-        if legy:
-            print 'thank god an energy was found -- adding to DB'
-            #    db['parentInchi'] = m.GetTitle(mol_string)
-            db['childInchi'] = obc.WriteString(m)
-            obc.SetOutFormat('smi')
-            db['childSmiles'] = obc.WriteString(m)
-            obc.SetOutFormat('inchi')
-            db['molecularFormula'] = m.GetFormula()
-            mol['atoms'] = atoms
-            db['molecule'] = mol
-            db['totalEnergy'] = {"value": egy, "units": "Hartree"}
-
+    output_fname = calculate_energy(f)
+    mol = {}
+    atoms = []
+    egy = 0.0
+    converged = False
+    start_atoms = False
+    legy = False
+    with open(output_fname, 'r') as output:
+        if 'THE OPTIMIZATION HAS CONVERGED' in output.read():
+            print "optimization converged"
+            converged = True
         else:
-            print "no energy was found for ", m.GetFormula()
             egy = get_energy(m, f, db)
+
+    with open(output_fname, 'r') as output:
+        print output_fname, 'file opened for parsing'
+        for line in output:
+            if 'CARTESIAN' in line and 'ANGSTROEM' in line:
+                start_atoms = True
+
+            if start_atoms and 'CARTESIAN' not in line:
+                if '----------' in line:
+                    pass
+                elif line == '\n':
+                    start_atoms = False
+                else:
+                    atom = {}
+                    match = re.search(r'\s*(?P<atom>[A-Z][a-z]*)' +
+                                      r'\s*(?P<x>\-*[0-9]+\.[0-9]+)' +
+                                      r'\s*(?P<y>\-*[0-9]+\.[0-9]+)' +
+                                      r'\s*(?P<z>\-*[0-9]+\.[0-9]+)', line)
+
+                    atom['elementSymbol'] = match.group('atom')
+                    coords = [match.group(i) for i in ['x', 'y', 'z']]
+                    atom['cartesianCoordinates'] = \
+                            {'value' : coords, 'units' : 'Angstrom'}
+                    atoms.append(atom)
+
+            if 'Total Energy' in line:
+                egy = line.split()[3]
+                legy = True
+                print "breaking out!"
+                break
+
+        print output_fname, 'file closed'
+
+    if legy:
+        print 'thank god an energy was found -- adding to DB'
+        #    db['parentInchi'] = m.GetTitle(mol_string)
+        db['childInchi'] = obc.WriteString(m)
+        obc.SetOutFormat('smi')
+        db['childSmiles'] = obc.WriteString(m)
+        obc.SetOutFormat('inchi')
+        db['molecularFormula'] = m.GetFormula()
+        mol['atoms'] = atoms
+        db['molecule'] = mol
+        db['totalEnergy'] = {"value": egy, "units": "Hartree"}
+
+    else:
+        print "no energy was found for ", m.GetFormula()
+        egy = get_energy(m, f, db)
 
     print 'get_energy is returning properly'
     return egy
@@ -198,16 +192,22 @@ def perform_work(mol_string):
     print m.GetFormula(), str(m.NumAtoms()) + ' atoms'
 
     fname = create_orca_input(m, db)
-    egy_neutral = get_energy(m, fname, db)
+    db['_id'] = fname.split('/')[1].strip('.inp')
 
-    print 'energy =', egy_neutral
-
-    try:
-        insert = neutrals.insert_one(db)
-    except pymongo.errors.OperationError:
-        print "failed to add energy to database"
+    c = neutrals.find({"_id": db['_id']}).count()
+    if c > 0:
+        print 'database entry ', db['_id'], ' found. moving on.'
     else:
-        print "successfully added energy to database"
+        egy_neutral = get_energy(m, fname, db)
+
+        print 'energy =', egy_neutral
+
+        try:
+            insert = neutrals.insert_one(db)
+        except pymongo.errors.OperationError:
+            print "failed to add energy to database"
+        else:
+            print "successfully added energy to database"
 
 #    Parallel(n_jobs=8)(delayed(deprotonate)(m, atom) \
 #            for atom in ob.OBMolAtomIter(m) if atom.IsHydrogen)

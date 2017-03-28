@@ -6,3 +6,6 @@ scr/*opt
 scr/*prop
 scr/*trj
 scr/*xyz
+scr/*.engrad
+data
+inp
