@@ -1,17 +1,18 @@
-import openbabel as ob
 import re
 import csv
 import subprocess
+import openbabel as ob
 from fireworks import Firework, LaunchPad, Workflow, FiretaskBase
 from fireworks.core.rocket_launcher import launch_rocket
 from fireworks.utilities.fw_utilities import explicit_serialize
+
 
 @explicit_serialize
 class CreateOrcaInputTask(FiretaskBase):
     required_params = ['molecule_string']
     optional_params = ['level_of_theory']
 
-    def _create_openbabel_molecule(molecule_string):
+    def _create_openbabel_molecule(self, molecule_string):
         m = ob.OBMol()
         m.SetTitle(molecule_string)
         obc.ReadString(m, molecule_string)
@@ -20,7 +21,7 @@ class CreateOrcaInputTask(FiretaskBase):
 
         return m
 
-    def _create_orca_input_string(molecule_string, db):
+    def _create_orca_input_string(self, molecule_string):
         molecule = self._create_openbabel_molecule(molecule_string)
 
         orca_string = ''
@@ -34,7 +35,7 @@ class CreateOrcaInputTask(FiretaskBase):
         orca_string += ' Mult ' + str(mult) + '\n coords\n'
 
         for atom in ob.OBMolAtomIter(molecule):
-            orca_string += ' ' + obet.GetSymbol(atom.GetAtomicNum()) 
+            orca_string += ' ' + obet.GetSymbol(atom.GetAtomicNum())
             orca_string += ' ' + str(atom.GetX())
             orca_string += ' ' + str(atom.GetY())
             orca_string += ' ' + str(atom.GetZ()) + ' \n'
@@ -42,79 +43,82 @@ class CreateOrcaInputTask(FiretaskBase):
         orca_string += ' end\nend\n'
         orca_string += '%geom\n MaxIter 200\n end\n'
         orca_string += '%scf\n MaxIter 1500\n end\n'
-        db['calculationSetup'] = {
+        calc_setup = {
+            "molecular_formula": molecule.GetFormula(),
             "molecularSpinMultiplicity": mult,
             "charge": charge,
             "numberOfElectrons": get_n_electrons(m),
             "waveFunctionTheory": "PM3"
         }
-        return orca_string
+        return orca_string, calc_setup
 
-    def _get_n_electrons(molecule):
-        elec_count = [atom.GetAtomicNum() 
-                for atom in ob.OBMolAtomIter(molecule)]
+    def _get_n_electrons(self, molecule):
+        elec_count = [
+            atom.GetAtomicNum() for atom in ob.OBMolAtomIter(molecule)
+        ]
         return sum(elec_count)
 
     def run_task(self, fw_spec):
-        orca_string = self._create_orca_input_string(self['molecule_string'])
-        return FWAction(stored_data={'orca_string': orca_string},
-                update_spec={'orca_string': orca_string})
+        orca_string, calc_setup = self._create_orca_input_string(self['molecule_string'])
+        run_calculation = Firework(ComputeEnergyTask(),
+                                   {'orca_string': orca_string,
+                                    'formula': calc_setup['molecular_formula']})
+        return FWAction(
+            stored_data={
+                'orca_string': orca_string,
+                'calculation_setup': calc_setup
+            },
+            update_spec={'orca_string': orca_string},
+            additions=run_calculation)
+
 
 @explicit_serialize
 class ComputeEnergyTask(FiretaskBase):
     _fw_name = 'ComputeEnergyTask'
 
-    def _write_string_to_orca_file(orca_string):
-        input_name = 'scr/' + m.GetFormula() + '.inp'
+    def _write_string_to_orca_file(self):
+        input_name = 'scr/' + self.formula + '.inp'
         with open(input_name, 'w') as f:
-            f.write(orca_string)
+            f.write(self.orca_string)
 
         return
 
-    def _create_slurm_file():
+    def _create_slurm_file(self):
         pass
 
-    def _calculate_energy(fname):
-        outfile = fname.strip('inp') + 'out'
-        out = open(outfile, 'w')
-        if np > 1:
-            subprocess.call(['mpirun.openmpi', '-np', str(np), \
-             '../../orca_3_0_3/orca', fname], stdout=out)
-        else:
-            subprocess.call(['../../orca_3_0_3/orca', fname], stdout=out)
-        return outfile
+    def _calculate_energy(self):
+        path_to_output = self.formula + '.out'
+        with open(path_to_output, 'w') as f:
+            subprocess.call(['../../orca_3_0_3/orca', fname], stdout=f)
+
+        return path_to_output
 
     def run_task(self, fw_spec):
+        self.orca_string = fw_spec['orca_string']
+        self.formula = fw_spec['formula']
+        self._write_string_to_orca_file()
+
         try:
-            self._calculate_energy(self['molecule'])
-        except: # some kind of fault error
-            rerun_fw = Firework(ComputeEnergyTask(), 
-                    {'molecule': self['molecule']})
-            return FWAction(stored_data={'output': output_file}, detour=rerun_fw)
+            path_to_output = self._calculate_energy()
+        except:  # some kind of fault error
+            rerun_fw = Firework(ComputeEnergyTask(),
+                                {'molecule': self['molecule']})
+            return FWAction(
+                stored_data={'path_to_output': path_to_output}, detour=rerun_fw)
         else:
-            return FWAction()
+            process_fw = Firework(AddCalculationtoDBTask(),
+                                  {'path_to_output': path_to_output})
+            return FWAction(
+                stored_data={'path_to_output': path_to_output}, addition=process_fw)
+
 
 @explicit_serialize
 class AddCalculationtoDBTask(FiretaskBase):
-    _fw_name = 'AddCalctoDBTask'
+    required_params = ['input_file']
 
-    def get_energy(m, f, db):
-        output_fname = calculate_energy(f)
-        mol = {}
-        atoms = []
-        egy = 0.0
-        converged = False
-        start_atoms = False
-        legy = False
-        with open(output_fname, 'r') as output:
-            if 'THE OPTIMIZATION HAS CONVERGED' in output.read():
-                print "optimization converged"
-                converged = True
-            else:
-                egy = get_energy(m, f, db)
-
-        with open(output_fname, 'r') as output:
-            print output_fname, 'file opened for parsing'
+    def _get_optimized_coords(self, input_file):
+        atomic_coords = []
+        with open(input_file, 'r') as output:
             for line in output:
                 if 'CARTESIAN' in line and 'ANGSTROEM' in line:
                     start_atoms = True
@@ -135,61 +139,58 @@ class AddCalculationtoDBTask(FiretaskBase):
                         coords = [match.group(i) for i in ['x', 'y', 'z']]
                         atom['cartesianCoordinates'] = \
                                 {'value' : coords, 'units' : 'Angstrom'}
-                        atoms.append(atom)
+                        atomic_coords.append(atom)
 
+            return atomic_coords
+
+    def _get_energy(self, input_file):
+        with open(input_file, 'r') as output:
+            print input_file, 'file opened for parsing'
+            for line in output:
                 if 'Total Energy' in line:
                     egy = line.split()[3]
-                    legy = True
                     print "breaking out!"
                     break
-
-            print output_fname, 'file closed'
-
-        if legy:
-            print 'thank god an energy was found -- adding to DB'
-            #    db['parentInchi'] = m.GetTitle(mol_string)
-            db['childInchi'] = obc.WriteString(m)
-            obc.SetOutFormat('smi')
-            db['childSmiles'] = obc.WriteString(m)
-            obc.SetOutFormat('inchi')
-            db['molecularFormula'] = m.GetFormula()
-            mol['atoms'] = atoms
-            db['molecule'] = mol
-            db['totalEnergy'] = {"value": egy, "units": "Hartree"}
-
-        else:
-            print "no energy was found for ", m.GetFormula()
-            egy = get_energy(m, f, db)
+            print input_file, 'file closed'
 
         print 'get_energy is returning properly'
         return egy
 
+    def run_task(self, fw_spec):
+        energy = self._get_energy(self['input_file'])
+        coords = self._get_optimized_coords(self['input_file'])
 
-    def run_task(self):
-        get_energy()
+        return FWAction(
+            stored_data={'energy': {
+                'value': energy,
+                'units': 'Hartree'
+            }})
+
+
 def read_molecules_from_csv(fname):
     mols = {}
     with open(fname) as csvFile:
-        csvReader = csv.reader(csvFile)
-        for row in csvReader:
-            _, inchiString, inchiKey = row[0], row[1], row[2]
-            mols[inchiKey] = inchiString
+        csv_reader = csv.reader(csvFile)
+        for row in csv_reader:
+            _, inchi_string, inchi_key = row[0], row[1], row[2]
+            mols[inchi_key] = inchi_string
     return mols
+
 
 def protonate(m, atom, db):
     mm = ob.OBMol(m)
     atom.IncrementImplicitValence()
     mm.AddHydrogens(atom)
     print 'protonating atom', mm.GetFormula()
-    totalCharge = m.GetTotalCharge()
-    m.SetTotalCharge(totalCharge + 1)
+    total_charge = m.GetTotalCharge()
+    m.SetTotalCharge(total_charge + 1)
     egy = getEnergy(m, db, mongoDB)
     if egy < protonationEnergy:
-        protonatedEnergy = egy
-        protonatedAtom = atom.GetIdx()
-    atomToDelete = m.getAtom(m.NumAtoms())
-    m.DeleteAtom(atomToDelete)
-    m.SetTotalCharge(totalCharge)
+        protonated_energy = egy
+        protonated_atom = atom.GetIdx()
+    atom_to_delete = m.getAtom(m.NumAtoms())
+    m.DeleteAtom(atom_to_delete)
+    m.SetTotalCharge(total_charge)
     print('protonation', egy)
 
 
@@ -207,7 +208,7 @@ def deprotonate(m, atom, db):
     if egy < deprotonated_energy:
         deprotonated_energy = egy
     for connected_atom in ob.OBAtomAtomIter(atom):
-        deprotonatedAtom = connectedAtom.GetIdx()
+        deprotonated_atom = connectedAtom.GetIdx()
         print('deprotonation', egy)
 
 
@@ -215,10 +216,6 @@ def perform_work(mol_string):
     obc.WriteFile(m, 'xyz/' + m.GetFormula() + '.xyz')
     print m.GetFormula(), str(m.NumAtoms()) + ' atoms'
 
-    if 'Mo' in m.GetFormula():
-        return
-
-    fname = create_orca_input(m, db)
     db['_id'] = fname.split('/')[1].strip('.inp')
 
     c = neutrals.find({"_id": db['_id']}).count()
@@ -236,11 +233,6 @@ def perform_work(mol_string):
         else:
             print "successfully added energy to database"
 
-#    Parallel(n_jobs=8)(delayed(deprotonate)(m, atom) \
-#            for atom in ob.OBMolAtomIter(m) if atom.IsHydrogen)
-
-#    Parallel(n_jobs=8)(delayed(protonate)(m, atom) \
-#            for atom in ob.OBMolAtomIter(m) if not atom.IsHydrogen)
 
 if __name__ == "__main__":
     obc = ob.OBConversion()
@@ -248,31 +240,31 @@ if __name__ == "__main__":
     obet = ob.OBElementTable()
     b = ob.OBBuilder()
 
-    csv_file = 'metatlas_inchi_inchikey.csv'
-    mols = read_molecules_from_csv(csv_file)
-    
-    lpad = LaunchPad(host='mongodb03.nersc.gov', 
-                     port=27017,
-                     name='metatlas',
-                     username='metatlas_admin',
-                     password='2sssj2sssj2a')
+    CSV_FILE = 'metatlas_inchi_inchikey.csv'
+    MOLS = read_molecules_from_csv(CSV_FILE)
 
-    print lpad.get_fw_dict_by_id(4)
-    launch_rocket(lpad, fw_id=4)
-#    for _, mol_string in mols.iteritems():
-#        setup_task = Firework(CreateOrcaInputTask(molecule_string=mol_string))
-#        run_calculation = Firework(ComputeEnergyTask())
-#        add_info_to_db = Firework(AddCalculationtoDBTask())
-#
-#        fw = Workflow([setup_task])
-##        fw = Workflow([setup_task, run_calculation, add_info_to_db], 
-##                {setup_task: [run_calculation], 
-##                run_calculation: [add_info_to_db])
-#        lpad.add_wf(fw)
-#        raise
+    lpad = LaunchPad(
+        host='mongodb03.nersc.gov',
+        port=27017,
+        name='metatlas',
+        username='metatlas_admin',
+        password='2sssj2sssj2a')
+
+    for _, mol_string in MOLS.iteritems():
+        setup_task = Firework(CreateOrcaInputTask(molecule_string=mol_string))
+
+        fw = Workflow([setup_task])
+       # fw = Workflow([setup_task, run_calculation, add_info_to_db],
+       #               {setup_task: [run_calculation],
+       #                run_calculation: [add_info_to_db])
+
+
+        lpad.add_wf(fw)
+        print lpad.get_fw_dict_by_id(6)
+        raise
 
 #    with Parallel(n_jobs=8, verbose=5) as p:
 #        p(delayed(perform_work)(mol_string) \
 #                for _, mol_string in mols.iteritems())
 
-    #perform_work(mols['UCMIRNVEIXFBKS-UHFFFAOYSA-N'])
+#perform_work(mols['UCMIRNVEIXFBKS-UHFFFAOYSA-N'])
