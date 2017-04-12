@@ -246,7 +246,7 @@ def perform_work(mol_string):
             print "successfully added energy to database"
 
 
-if __name__ == "__main__":
+def create_launchpad():
     config = SafeConfigParser()
     config.read('/home/bkrull/.fireworks/metatlas.ini')
     db = config['db']
@@ -258,6 +258,10 @@ if __name__ == "__main__":
         username=db['username'],
         password=db['password'])
 
+    return lpad
+
+
+if __name__ == "__main__":
     obc = ob.OBConversion()
     obc.SetInAndOutFormats('inchi', 'xyz')
     obet = ob.OBElementTable()
@@ -265,6 +269,8 @@ if __name__ == "__main__":
 
     CSV_FILE = 'metatlas_inchi_inchikey.csv'
     MOLS = read_molecules_from_csv(CSV_FILE)
+
+    lpad = create_launchpad()
 
     for _, mol_string in MOLS.iteritems():
         molecule = create_openbabel_molecule(mol_string)
