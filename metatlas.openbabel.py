@@ -1,7 +1,18 @@
+"""
+FireWorks implementation for the computation of electronic structure for
+molecules in the Metatlas database.
+
+-----------    ----------    -----------
+| Create  |    | Run    |    | Process |
+| Orca    | => | Orca   | => | Output  |
+| Input   |    | Calc   |    | File    |
+-----------    ----------    -----------
+"""
 import re
 import csv
 import subprocess
 import openbabel as ob
+from configparser import SafeConfigParser
 from fireworks import Firework, LaunchPad, Workflow, FiretaskBase
 from fireworks.core.rocket_launcher import launch_rocket
 from fireworks.utilities.fw_utilities import explicit_serialize
@@ -12,18 +23,7 @@ class CreateOrcaInputTask(FiretaskBase):
     required_params = ['molecule_string']
     optional_params = ['level_of_theory']
 
-    def _create_openbabel_molecule(self, molecule_string):
-        m = ob.OBMol()
-        m.SetTitle(molecule_string)
-        obc.ReadString(m, molecule_string)
-        m.AddHydrogens()
-        b.Build(m)
-
-        return m
-
-    def _create_orca_input_string(self, molecule_string):
-        molecule = self._create_openbabel_molecule(molecule_string)
-
+    def _create_orca_input_string(self, molecule):
         orca_string = ''
         charge = molecule.GetTotalCharge()
         mult = (1 if (self._get_n_electrons(molecule) + charge) % 2 == 0 else 2)
@@ -59,7 +59,9 @@ class CreateOrcaInputTask(FiretaskBase):
         return sum(elec_count)
 
     def run_task(self, fw_spec):
-        orca_string, calc_setup = self._create_orca_input_string(self['molecule_string'])
+
+        molecule = create_openbabel_molecule(self['molecule_string'])
+        orca_string, calc_setup = self._create_orca_input_string(molecule)
         run_calculation = Firework(ComputeEnergyTask(),
                                    {'orca_string': orca_string,
                                     'formula': calc_setup['molecular_formula']})
@@ -177,6 +179,16 @@ def read_molecules_from_csv(fname):
     return mols
 
 
+def create_openbabel_molecule(molecule_string):
+    m = ob.OBMol()
+    m.SetTitle(molecule_string)
+    obc.ReadString(m, molecule_string)
+    m.AddHydrogens()
+    b.Build(m)
+
+    return m
+
+
 def protonate(m, atom, db):
     mm = ob.OBMol(m)
     atom.IncrementImplicitValence()
@@ -235,6 +247,17 @@ def perform_work(mol_string):
 
 
 if __name__ == "__main__":
+    config = SafeConfigParser()
+    config.read('/home/bkrull/.fireworks/metatlas.ini')
+    db = config['db']
+
+    lpad = LaunchPad(
+        host=db['host'],
+        port=int(db['port']),
+        name=db['name'],
+        username=db['username'],
+        password=db['password'])
+
     obc = ob.OBConversion()
     obc.SetInAndOutFormats('inchi', 'xyz')
     obet = ob.OBElementTable()
@@ -243,28 +266,15 @@ if __name__ == "__main__":
     CSV_FILE = 'metatlas_inchi_inchikey.csv'
     MOLS = read_molecules_from_csv(CSV_FILE)
 
-    lpad = LaunchPad(
-        host='mongodb03.nersc.gov',
-        port=27017,
-        name='metatlas',
-        username='metatlas_admin',
-        password='2sssj2sssj2a')
-
     for _, mol_string in MOLS.iteritems():
-        setup_task = Firework(CreateOrcaInputTask(molecule_string=mol_string))
-
-        fw = Workflow([setup_task])
-       # fw = Workflow([setup_task, run_calculation, add_info_to_db],
-       #               {setup_task: [run_calculation],
-       #                run_calculation: [add_info_to_db])
-
+        molecule = create_openbabel_molecule(mol_string)
+        fw = Firework(CreateOrcaInputTask(molecule_string=mol_string),
+                      name=molecule.GetFormula())
 
         lpad.add_wf(fw)
-        print lpad.get_fw_dict_by_id(6)
+        id = lpad.get_new_launch_id()
+        print lpad.get_fw_dict_by_id(id)
+        launch_rocket(lpad, fw_id=id)
         raise
-
-#    with Parallel(n_jobs=8, verbose=5) as p:
-#        p(delayed(perform_work)(mol_string) \
-#                for _, mol_string in mols.iteritems())
 
 #perform_work(mols['UCMIRNVEIXFBKS-UHFFFAOYSA-N'])
