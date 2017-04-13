@@ -14,81 +14,23 @@ import subprocess
 import openbabel as ob
 import pybel
 from configparser import SafeConfigParser
-from fireworks import Firework, LaunchPad, Workflow, FiretaskBase
+from fireworks import Firework, LaunchPad, Workflow, FiretaskBase, FWAction
+from fireworks.core.fworker import FWorker
 from fireworks.core.rocket_launcher import launch_rocket
+from fireworks.user_objects.queue_adapters.common_adapter import CommonAdapter
+from fireworks.queue.queue_launcher import launch_rocket_to_queue
 from fireworks.utilities.fw_utilities import explicit_serialize
-
-
-@explicit_serialize
-class CreateOrcaInputTask(FiretaskBase):
-    required_params = ['molecule_string']
-    optional_params = ['level_of_theory']
-
-    def _create_orca_input_string(self, molecule):
-        obet = ob.OBElementTable()
-
-        charge = molecule.charge
-        nelectrons = self._get_n_electrons(molecule)
-        mult = (1 if (nelectrons + charge) % 2 == 0 else 2)
-        calc_setup = {
-            "molecular_formula": molecule.formula,
-            "molecularSpinMultiplicity": mult,
-            "charge": charge,
-            "numberOfElectrons": nelectrons,
-            "waveFunctionTheory": "PM3"
-        }
-
-        orca_string = ''
-        orca_string += '%MaxCore 6000\n'
-        orca_string += '!SlowConv\n'
-        orca_string += '!NOSOSCF\n'
-        orca_string += '!PM3 Opt \n%coords \n  CTyp xyz\n'
-        orca_string += ' Charge ' + str(charge) + '\n'
-        orca_string += ' Mult ' + str(mult) + '\n coords\n'
-
-        for atom in molecule.atoms:
-            tmp = ''
-            tmp += ' ' + obet.GetSymbol(atom.atomicnum)
-            tmp += ' ' + str(atom.coords[0])
-            tmp += ' ' + str(atom.coords[1])
-            tmp += ' ' + str(atom.coords[2]) + ' \n'
-            print tmp
-            orca_string += tmp
-
-        orca_string += ' end\nend\n'
-        orca_string += '%geom\n MaxIter 200\n end\n'
-        orca_string += '%scf\n MaxIter 1500\n end\n'
-
-        return orca_string, calc_setup
-
-    def _get_n_electrons(self, molecule):
-        elec_count = [atom.atomicnum for atom in molecule.atoms]
-        return sum(elec_count)
-
-    def run_task(self, fw_spec):
-        molecule = create_pybel_molecule(self['molecule_string'], lprint=True)
-        print 'type of molecule in run task is ', type(molecule)
-        orca_string, calc_setup = self._create_orca_input_string(molecule)
-        run_calculation = Firework(ComputeEnergyTask(),
-                                   {'orca_string': orca_string,
-                                    'formula': molecule.formula})
-        return FWAction(
-            stored_data={
-                'orca_string': orca_string,
-                'calculation_setup': calc_setup
-            },
-            update_spec={'orca_string': orca_string},
-            additions=run_calculation)
 
 
 @explicit_serialize
 class ComputeEnergyTask(FiretaskBase):
     _fw_name = 'ComputeEnergyTask'
+    required_params = ['input_string', 'calc_details']
 
-    def _write_string_to_orca_file(self):
-        input_name = 'scr/' + self.formula + '.inp'
+    def _write_string_to_orca_file(self, formula, input_string):
+        input_name = 'scr/' + formula + '.inp'
         with open(input_name, 'w') as f:
-            f.write(self.orca_string)
+            f.write(input_string)
 
         return
 
@@ -96,34 +38,36 @@ class ComputeEnergyTask(FiretaskBase):
         pass
 
     def _calculate_energy(self):
-        path_to_output = self.formula + '.out'
-        with open(path_to_output, 'w') as f:
-            subprocess.call(['../../orca_3_0_3/orca', fname], stdout=f)
+        path_to_output = 'scr/' + self.formula + '.out'
+        f = open(path_to_output, 'w')
+        subprocess.call(['../../orca_3_0_3/orca', fname], stdout=f)
+        f.close()
 
         return path_to_output
 
     def run_task(self, fw_spec):
-        self.orca_string = fw_spec['orca_string']
-        self.formula = fw_spec['formula']
-        self._write_string_to_orca_file()
+        formula = self['calc_details']['molecular_formula']
+        input_string = self['input_string']
+        self._write_string_to_orca_file(formula, input_string)
 
         try:
             path_to_output = self._calculate_energy()
         except:  # some kind of fault error
-            rerun_fw = Firework(ComputeEnergyTask(),
-                                {'molecule': self['molecule']})
-            return FWAction(
-                stored_data={'path_to_output': path_to_output}, detour=rerun_fw)
+            rerun_fw = Firework(ComputeEnergyTask(input_string=self['input_string'],
+                                                  calc_details=self['calc_details']),
+                                name=formula)
+            return FWAction(detours=rerun_fw)
         else:
-            process_fw = Firework(AddCalculationtoDBTask(),
-                                  {'path_to_output': path_to_output})
-            return FWAction(
-                stored_data={'path_to_output': path_to_output}, addition=process_fw)
+            process_fw = Firework(AddCalculationtoDBTask(path_to_calc_output=path_to_output))
+            return FWAction(stored_data={'path_to_calc_output':path_to_output},
+                            additions=process_fw)
+
+        raise
 
 
 @explicit_serialize
 class AddCalculationtoDBTask(FiretaskBase):
-    required_params = ['input_file']
+    required_params = ['path_to_calc_output']
 
     def _get_optimized_coords(self, input_file):
         atomic_coords = []
@@ -240,10 +184,52 @@ def create_pybel_molecule(inchi_string, lprint=False):
         return molecule
 
 
-def create_launchpad():
+def create_orca_input_string(molecule):
+    obet = ob.OBElementTable()
+
+    charge = molecule.charge
+    nelectrons = get_n_electrons(molecule)
+    mult = (1 if (nelectrons + charge) % 2 == 0 else 2)
+    calc_details = {
+        "molecular_formula": molecule.formula,
+        "molecularSpinMultiplicity": mult,
+        "charge": charge,
+        "numberOfElectrons": nelectrons,
+        "waveFunctionTheory": "PM3"
+    }
+
+    orca_string = ''
+    orca_string += '%MaxCore 6000\n'
+    orca_string += '!SlowConv\n'
+    orca_string += '!NOSOSCF\n'
+    orca_string += '!PM3 Opt \n%coords \n  CTyp xyz\n'
+    orca_string += ' Charge ' + str(charge) + '\n'
+    orca_string += ' Mult ' + str(mult) + '\n coords\n'
+
+    for atom in molecule.atoms:
+        tmp = ''
+        tmp += ' ' + obet.GetSymbol(atom.atomicnum)
+        tmp += ' ' + str(atom.coords[0])
+        tmp += ' ' + str(atom.coords[1])
+        tmp += ' ' + str(atom.coords[2]) + ' \n'
+        orca_string += tmp
+
+    orca_string += ' end\nend\n'
+    orca_string += '%geom\n MaxIter 200\n end\n'
+    orca_string += '%scf\n MaxIter 1500\n end\n'
+
+    return orca_string, calc_details
+
+
+def get_n_electrons(molecule):
+    elec_count = [atom.atomicnum for atom in molecule.atoms]
+    return sum(elec_count)
+
+
+def create_launchpad(db_config_file):
     """use to create a FW launchpad using mongodb creds from file"""
     config = SafeConfigParser()
-    config.read('/home/bkrull/.fireworks/metatlas.ini')
+    config.read(db_config_file)
     db = config['db']
 
     lpad = LaunchPad(
@@ -256,21 +242,51 @@ def create_launchpad():
     return lpad
 
 
+def create_fworker(name):
+    fworker_config = '/home/bkrull/.fireworks/' + name.lower() + '.yaml'
+    fworker = FWorker().from_file(fworker_config)
+
+    return fworker
+
+
+def create_queue_adapater(q_type):
+    slurm_adapter = CommonAdapter(q_type=q_type,
+                                  template_file='/home/bkrull/.fireworks/slurm.yaml',
+                                  reserve=True)
+
+    return slurm_adapter
+
+
 if __name__ == "__main__":
-    csv_file = 'metatlas_inchi_inchikey.csv'
-    mols = read_molecules_from_csv(csv_file)
+    METATLAS_DB_CONFIG = '/home/bkrull/.fireworks/metatlas.ini'
+    CSV_FILE = 'metatlas_inchi_inchikey.csv'
+    PROJECT_HOME = 'scr/'
 
-    lpad = create_launchpad()
+    metatlas_lpad = create_launchpad(METATLAS_DB_CONFIG)
+    edison = create_fworker(name='Edison')
+    slurm_adapter = create_queue_adapater(q_type='SLURM')
 
-    lpad.reset('2017-04-12')
+    metatlas_lpad.reset('2017-04-13')
+
+    mols = read_molecules_from_csv(CSV_FILE)
+
     for _, mol_string in mols.iteritems():
         molecule = create_pybel_molecule(mol_string)
-        fw = Firework(CreateOrcaInputTask(molecule_string=mol_string),
+        orca_string, calc_details = create_orca_input_string(molecule)
+
+        fw = Firework(ComputeEnergyTask(input_string=orca_string,
+                                        calc_details=calc_details),
                       name=molecule.formula)
 
-        lpad.add_wf(fw)
-        id = lpad.get_new_launch_id()
-        print lpad.get_fw_dict_by_id(id)
-        launch_rocket(lpad, fw_id=id)
+        metatlas_lpad.add_wf(fw)
+        id = metatlas_lpad.get_new_launch_id()
+        print metatlas_lpad.get_fw_dict_by_id(id)
+        launch_rocket_to_queue(metatlas_lpad,
+                               edison,
+                               slurm_adapter,
+                               launcher_dir=PROJECT_HOME,
+                               create_launcher_dir=True,
+                               fw_id=id,
+                               reserve=True)
 
 #perform_work(mols['UCMIRNVEIXFBKS-UHFFFAOYSA-N'])
