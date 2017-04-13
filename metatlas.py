@@ -12,6 +12,7 @@ import re
 import csv
 import subprocess
 import openbabel as ob
+import pybel
 from configparser import SafeConfigParser
 from fireworks import Firework, LaunchPad, Workflow, FiretaskBase
 from fireworks.core.rocket_launcher import launch_rocket
@@ -24,9 +25,20 @@ class CreateOrcaInputTask(FiretaskBase):
     optional_params = ['level_of_theory']
 
     def _create_orca_input_string(self, molecule):
+        obet = ob.OBElementTable()
+
+        charge = molecule.charge
+        nelectrons = self._get_n_electrons(molecule)
+        mult = (1 if (nelectrons + charge) % 2 == 0 else 2)
+        calc_setup = {
+            "molecular_formula": molecule.formula,
+            "molecularSpinMultiplicity": mult,
+            "charge": charge,
+            "numberOfElectrons": nelectrons,
+            "waveFunctionTheory": "PM3"
+        }
+
         orca_string = ''
-        charge = molecule.GetTotalCharge()
-        mult = (1 if (self._get_n_electrons(molecule) + charge) % 2 == 0 else 2)
         orca_string += '%MaxCore 6000\n'
         orca_string += '!SlowConv\n'
         orca_string += '!NOSOSCF\n'
@@ -34,37 +46,32 @@ class CreateOrcaInputTask(FiretaskBase):
         orca_string += ' Charge ' + str(charge) + '\n'
         orca_string += ' Mult ' + str(mult) + '\n coords\n'
 
-        for atom in ob.OBMolAtomIter(molecule):
-            orca_string += ' ' + obet.GetSymbol(atom.GetAtomicNum())
-            orca_string += ' ' + str(atom.GetX())
-            orca_string += ' ' + str(atom.GetY())
-            orca_string += ' ' + str(atom.GetZ()) + ' \n'
+        for atom in molecule.atoms:
+            tmp = ''
+            tmp += ' ' + obet.GetSymbol(atom.atomicnum)
+            tmp += ' ' + str(atom.coords[0])
+            tmp += ' ' + str(atom.coords[1])
+            tmp += ' ' + str(atom.coords[2]) + ' \n'
+            print tmp
+            orca_string += tmp
 
         orca_string += ' end\nend\n'
         orca_string += '%geom\n MaxIter 200\n end\n'
         orca_string += '%scf\n MaxIter 1500\n end\n'
-        calc_setup = {
-            "molecular_formula": molecule.GetFormula(),
-            "molecularSpinMultiplicity": mult,
-            "charge": charge,
-            "numberOfElectrons": get_n_electrons(m),
-            "waveFunctionTheory": "PM3"
-        }
+
         return orca_string, calc_setup
 
     def _get_n_electrons(self, molecule):
-        elec_count = [
-            atom.GetAtomicNum() for atom in ob.OBMolAtomIter(molecule)
-        ]
+        elec_count = [atom.atomicnum for atom in molecule.atoms]
         return sum(elec_count)
 
     def run_task(self, fw_spec):
-
-        molecule = create_openbabel_molecule(self['molecule_string'])
+        molecule = create_pybel_molecule(self['molecule_string'], lprint=True)
+        print 'type of molecule in run task is ', type(molecule)
         orca_string, calc_setup = self._create_orca_input_string(molecule)
         run_calculation = Firework(ComputeEnergyTask(),
                                    {'orca_string': orca_string,
-                                    'formula': calc_setup['molecular_formula']})
+                                    'formula': molecule.formula})
         return FWAction(
             stored_data={
                 'orca_string': orca_string,
@@ -169,7 +176,43 @@ class AddCalculationtoDBTask(FiretaskBase):
             }})
 
 
+# def protonate(m, atom, db):
+#     mm = ob.OBMol(m)
+#     atom.IncrementImplicitValence()
+#     mm.AddHydrogens(atom)
+#     print 'protonating atom', mm.GetFormula()
+#     total_charge = m.GetTotalCharge()
+#     m.SetTotalCharge(total_charge + 1)
+#     egy = getEnergy(m, db, mongoDB)
+#     if egy < protonationEnergy:
+#         protonated_energy = egy
+#         protonated_atom = atom.GetIdx()
+#     atom_to_delete = m.getAtom(m.NumAtoms())
+#     m.DeleteAtom(atom_to_delete)
+#     m.SetTotalCharge(total_charge)
+#     print('protonation', egy)
+
+
+# def deprotonate(m, atom, db):
+#     mm = ob.OBMol(m)
+#     mm.DeleteAtom(atom)
+#     print 'deprotonating atom', mm.GetFormula()
+#     mm.SetTotalCharge(m.GetTotalCharge() - 1)
+#     try:
+#         egy = get_energy(mm, db)
+#     except:
+#         print "failed to assign deprot energy"
+
+#     deprotonated_energy = 0
+#     if egy < deprotonated_energy:
+#         deprotonated_energy = egy
+#     for connected_atom in ob.OBAtomAtomIter(atom):
+#         deprotonated_atom = connectedAtom.GetIdx()
+#         print('deprotonation', egy)
+
+
 def read_molecules_from_csv(fname):
+    """ given a csv file, return dict of inchikey to inchistring """
     mols = {}
     with open(fname) as csvFile:
         csv_reader = csv.reader(csvFile)
@@ -179,74 +222,26 @@ def read_molecules_from_csv(fname):
     return mols
 
 
-def create_openbabel_molecule(molecule_string):
-    m = ob.OBMol()
-    m.SetTitle(molecule_string)
-    obc.ReadString(m, molecule_string)
-    m.AddHydrogens()
-    b.Build(m)
+def create_pybel_molecule(inchi_string, lprint=False):
+    """create an openbabel molecule from an inchistring"""
+    if lprint:
+        print 'inchi string in create mol is ', inchi_string
 
-    return m
-
-
-def protonate(m, atom, db):
-    mm = ob.OBMol(m)
-    atom.IncrementImplicitValence()
-    mm.AddHydrogens(atom)
-    print 'protonating atom', mm.GetFormula()
-    total_charge = m.GetTotalCharge()
-    m.SetTotalCharge(total_charge + 1)
-    egy = getEnergy(m, db, mongoDB)
-    if egy < protonationEnergy:
-        protonated_energy = egy
-        protonated_atom = atom.GetIdx()
-    atom_to_delete = m.getAtom(m.NumAtoms())
-    m.DeleteAtom(atom_to_delete)
-    m.SetTotalCharge(total_charge)
-    print('protonation', egy)
-
-
-def deprotonate(m, atom, db):
-    mm = ob.OBMol(m)
-    mm.DeleteAtom(atom)
-    print 'deprotonating atom', mm.GetFormula()
-    mm.SetTotalCharge(m.GetTotalCharge() - 1)
     try:
-        egy = get_energy(mm, db)
-    except:
-        print "failed to assign deprot energy"
-
-    deprotonated_energy = 0
-    if egy < deprotonated_energy:
-        deprotonated_energy = egy
-    for connected_atom in ob.OBAtomAtomIter(atom):
-        deprotonated_atom = connectedAtom.GetIdx()
-        print('deprotonation', egy)
-
-
-def perform_work(mol_string):
-    obc.WriteFile(m, 'xyz/' + m.GetFormula() + '.xyz')
-    print m.GetFormula(), str(m.NumAtoms()) + ' atoms'
-
-    db['_id'] = fname.split('/')[1].strip('.inp')
-
-    c = neutrals.find({"_id": db['_id']}).count()
-    if c > 0:
-        print 'database entry ', db['_id'], ' found. moving on.'
+        molecule = pybel.readstring('inchi', inchi_string, opt={})
+    except TypeError:
+        print 'Unable to convert inchi string to pybel.Molecule'
+        quit()
     else:
-        egy_neutral = get_energy(m, fname, db)
+        molecule.title = molecule.formula
+        molecule.addh()
+        molecule.make3D()
 
-        print 'energy =', egy_neutral
-
-        try:
-            insert = neutrals.insert_one(db)
-        except pymongo.errors.OperationError:
-            print "failed to add energy to database"
-        else:
-            print "successfully added energy to database"
+        return molecule
 
 
 def create_launchpad():
+    """use to create a FW launchpad using mongodb creds from file"""
     config = SafeConfigParser()
     config.read('/home/bkrull/.fireworks/metatlas.ini')
     db = config['db']
@@ -262,25 +257,20 @@ def create_launchpad():
 
 
 if __name__ == "__main__":
-    obc = ob.OBConversion()
-    obc.SetInAndOutFormats('inchi', 'xyz')
-    obet = ob.OBElementTable()
-    b = ob.OBBuilder()
-
-    CSV_FILE = 'metatlas_inchi_inchikey.csv'
-    MOLS = read_molecules_from_csv(CSV_FILE)
+    csv_file = 'metatlas_inchi_inchikey.csv'
+    mols = read_molecules_from_csv(csv_file)
 
     lpad = create_launchpad()
 
-    for _, mol_string in MOLS.iteritems():
-        molecule = create_openbabel_molecule(mol_string)
+    lpad.reset('2017-04-12')
+    for _, mol_string in mols.iteritems():
+        molecule = create_pybel_molecule(mol_string)
         fw = Firework(CreateOrcaInputTask(molecule_string=mol_string),
-                      name=molecule.GetFormula())
+                      name=molecule.formula)
 
         lpad.add_wf(fw)
         id = lpad.get_new_launch_id()
         print lpad.get_fw_dict_by_id(id)
         launch_rocket(lpad, fw_id=id)
-        raise
 
 #perform_work(mols['UCMIRNVEIXFBKS-UHFFFAOYSA-N'])
