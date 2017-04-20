@@ -11,8 +11,8 @@ molecules in the Metatlas database.
 import re
 import csv
 import subprocess
-import openbabel as ob
 import pybel
+from mendeleev import element
 from configparser import SafeConfigParser
 from fireworks import Firework, LaunchPad, Workflow, FiretaskBase, FWAction, FWorker
 from fireworks.user_objects.queue_adapters.common_adapter import CommonAdapter
@@ -51,8 +51,6 @@ def create_pybel_molecule(inchi_string, lprint=False):
 
 
 def create_orca_input_string(molecule):
-    obet = ob.OBElementTable()
-
     charge = molecule.charge
     nelectrons = get_n_electrons(molecule)
     mult = (1 if (nelectrons + charge) % 2 == 0 else 2)
@@ -74,7 +72,7 @@ def create_orca_input_string(molecule):
 
     for atom in molecule.atoms:
         tmp = ''
-        tmp += ' ' + obet.GetSymbol(atom.atomicnum)
+        tmp += ' ' + str(element(atom.atomicnum).symbol)
         tmp += ' ' + str(atom.coords[0])
         tmp += ' ' + str(atom.coords[1])
         tmp += ' ' + str(atom.coords[2]) + ' \n'
