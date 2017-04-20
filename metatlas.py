@@ -9,20 +9,11 @@ molecules in the Metatlas database.
 -----------    ----------    -----------
 """
 import re
-import csv
 import subprocess
 import openbabel as ob
 import pybel
-from configparser import SafeConfigParser
-from fireworks import Firework, LaunchPad, Workflow, FiretaskBase, FWAction
-from fireworks.core.fworker import FWorker
-from fireworks.core.rocket_launcher import launch_rocket
-from fireworks.user_objects.queue_adapters.common_adapter import CommonAdapter
-from fireworks.queue.queue_launcher import launch_rocket_to_queue
-from fireworks.utilities.fw_utilities import explicit_serialize
+from fireworks import Firework, FiretaskBase, FWAction
 
-
-@explicit_serialize
 class ComputeEnergyTask(FiretaskBase):
     _fw_name = 'ComputeEnergyTask'
     required_params = ['input_string', 'calc_details']
@@ -33,9 +24,6 @@ class ComputeEnergyTask(FiretaskBase):
             f.write(input_string)
 
         return
-
-    def _create_slurm_file(self):
-        pass
 
     def _calculate_energy(self):
         path_to_output = 'scr/' + self.formula + '.out'
@@ -65,8 +53,8 @@ class ComputeEnergyTask(FiretaskBase):
         raise
 
 
-@explicit_serialize
 class AddCalculationtoDBTask(FiretaskBase):
+
     required_params = ['path_to_calc_output']
 
     def _get_optimized_coords(self, input_file):
@@ -138,9 +126,7 @@ class AddCalculationtoDBTask(FiretaskBase):
 
 
 # def deprotonate(m, atom, db):
-#     mm = ob.OBMol(m)
-#     mm.DeleteAtom(atom)
-#     print 'deprotonating atom', mm.GetFormula()
+#     mm = ob.OBMol(m) #     mm.DeleteAtom(atom) #     print 'deprotonating atom', mm.GetFormula()
 #     mm.SetTotalCharge(m.GetTotalCharge() - 1)
 #     try:
 #         egy = get_energy(mm, db)
@@ -224,69 +210,3 @@ def create_orca_input_string(molecule):
 def get_n_electrons(molecule):
     elec_count = [atom.atomicnum for atom in molecule.atoms]
     return sum(elec_count)
-
-
-def create_launchpad(db_config_file):
-    """use to create a FW launchpad using mongodb creds from file"""
-    config = SafeConfigParser()
-    config.read(db_config_file)
-    db = config['db']
-
-    lpad = LaunchPad(
-        host=db['host'],
-        port=int(db['port']),
-        name=db['name'],
-        username=db['username'],
-        password=db['password'])
-
-    return lpad
-
-
-def create_fworker(name):
-    fworker_config = '/home/bkrull/.fireworks/' + name.lower() + '.yaml'
-    fworker = FWorker().from_file(fworker_config)
-
-    return fworker
-
-
-def create_queue_adapater(q_type):
-    slurm_adapter = CommonAdapter(q_type=q_type,
-                                  template_file='/home/bkrull/.fireworks/slurm.yaml',
-                                  reserve=True)
-
-    return slurm_adapter
-
-
-if __name__ == "__main__":
-    METATLAS_DB_CONFIG = '/home/bkrull/.fireworks/metatlas.ini'
-    CSV_FILE = 'metatlas_inchi_inchikey.csv'
-    PROJECT_HOME = 'scr/'
-
-    metatlas_lpad = create_launchpad(METATLAS_DB_CONFIG)
-    edison = create_fworker(name='Edison')
-    slurm_adapter = create_queue_adapater(q_type='SLURM')
-
-    metatlas_lpad.reset('2017-04-13')
-
-    mols = read_molecules_from_csv(CSV_FILE)
-
-    for _, mol_string in mols.iteritems():
-        molecule = create_pybel_molecule(mol_string)
-        orca_string, calc_details = create_orca_input_string(molecule)
-
-        fw = Firework(ComputeEnergyTask(input_string=orca_string,
-                                        calc_details=calc_details),
-                      name=molecule.formula)
-
-        metatlas_lpad.add_wf(fw)
-        id = metatlas_lpad.get_new_launch_id()
-        print metatlas_lpad.get_fw_dict_by_id(id)
-        launch_rocket_to_queue(metatlas_lpad,
-                               edison,
-                               slurm_adapter,
-                               launcher_dir=PROJECT_HOME,
-                               create_launcher_dir=True,
-                               fw_id=id,
-                               reserve=True)
-
-#perform_work(mols['UCMIRNVEIXFBKS-UHFFFAOYSA-N'])

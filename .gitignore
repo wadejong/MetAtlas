@@ -9,3 +9,6 @@ scr/*xyz
 scr/*.engrad
 data
 inp
+xyz
+TAGS
+*.pyc
