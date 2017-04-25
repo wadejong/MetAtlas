@@ -7,7 +7,7 @@ ntasks_per_node: 1
 walltime: '00:02:00'
 queue: regular
 account: m2485
-job_name: null
+job_name: $${job_name}
 logdir: /home/bkrull/Desktop/scr
 pre_rocket: null
 post_rocket: null
