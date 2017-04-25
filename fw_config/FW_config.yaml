@@ -1,3 +1,3 @@
-LAUNCHPAD_LOC: /home/bkrull/.fireworks/metatlas.yaml
-FWORKER_LOC: /home/bkrull/.fireworks/edison.yaml
-QUEUEADAPTER_LOC: /home/bkrull/.fireworks/slurm.yaml
+LAUNCHPAD_LOC: /global/homes/b/bkrull/.fireworks/metatlas.yaml
+FWORKER_LOC: /global/homes/b/bkrull/.fireworks/edison.yaml
+QUEUEADAPTER_LOC: /global/homes/b/bkrull/.fireworks/slurm.yaml
