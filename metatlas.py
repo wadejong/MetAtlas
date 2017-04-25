@@ -28,7 +28,7 @@ class ComputeEnergyTask(FiretaskBase):
     def _calculate_energy(self):
         path_to_output = 'scr/' + self.formula + '.out'
         f = open(path_to_output, 'w')
-        subprocess.call(['../../orca_3_0_3/orca', fname], stdout=f)
+        subprocess.call(['srun orca', fname], stdout=f)
         f.close()
 
         return path_to_output
