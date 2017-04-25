@@ -1,0 +1,5 @@
+host: mongodb03.nersc.gov
+port: 27017
+name: metatlas
+username: metatlas_admin
+password: 2sssj2sssj2a

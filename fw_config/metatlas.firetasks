@@ -1,0 +1,154 @@
+import openbabel as ob
+import re
+import subprocess
+from fireworks import Firework, LaunchPad, Workflow, FiretaskBase
+
+class CreateOrcaInputTask(FiretaskBase):
+    _fw_name = 'CreateOrcaInputTask'
+    required_params = ['molecule_string']
+    optional_params = ['level_of_theory']
+
+    def _write_string_to_orca_file(orca_string):
+        input_name = 'scr/' + m.GetFormula() + '.inp'
+        with open(input_name, 'w') as f:
+            f.write(orca_string)
+
+        return
+
+    def _create_openbabel_molecule(molecule_string):
+        m = ob.OBMol()
+        m.SetTitle(molecule_string)
+        obc.ReadString(m, molecule_string)
+        m.AddHydrogens()
+        b.Build(m)
+
+        return m
+
+    def _create_orca_input_string(molecule_string, db):
+        molecule = self._create_openbabel_molecule(molecule_string)
+
+        orca_string = ''
+        charge = molecule.GetTotalCharge()
+        mult = (1 if (self._get_n_electrons(molecule) + charge) % 2 == 0 else 2)
+        orca_string += '%MaxCore 6000\n'
+        orca_string += '!SlowConv\n'
+        orca_string += '!NOSOSCF\n'
+        orca_string += '!PM3 Opt \n%coords \n  CTyp xyz\n'
+        orca_string += ' Charge ' + str(charge) + '\n'
+        orca_string += ' Mult ' + str(mult) + '\n coords\n'
+
+        for atom in ob.OBMolAtomIter(molecule):
+            orca_string += ' ' + obet.GetSymbol(atom.GetAtomicNum()) 
+            orca_string += ' ' + str(atom.GetX())
+            orca_string += ' ' + str(atom.GetY())
+            orca_string += ' ' + str(atom.GetZ()) + ' \n'
+
+        orca_string += ' end\nend\n'
+        orca_string += '%geom\n MaxIter 200\n end\n'
+        orca_string += '%scf\n MaxIter 1500\n end\n'
+        db['calculationSetup'] = {
+            "molecularSpinMultiplicity": mult,
+            "charge": charge,
+            "numberOfElectrons": get_n_electrons(m),
+            "waveFunctionTheory": "PM3"
+        }
+        return orca_string
+
+    def _get_n_electrons(molecule):
+        elec_count = [atom.GetAtomicNum() 
+                for atom in ob.OBMolAtomIter(molecule)]
+        return sum(elec_count)
+
+    def run_task(self, fw_spec):
+        orca_string = self._create_orca_input_string(self['molecule_string'])
+        return FWAction(stored_data={'orca_string': orca_string},
+                update_spec={'orca_string': orca_string})
+
+class ComputeEnergyTask(FiretaskBase):
+    _fw_name = 'ComputeEnergyTask'
+
+    def calculate_energy(fname):
+        outfile = fname.strip('inp') + 'out'
+        out = open(outfile, 'w')
+        if np > 1:
+            subprocess.call(['mpirun.openmpi', '-np', str(np), \
+             '../../orca_3_0_3/orca', fname], stdout=out)
+        else:
+            subprocess.call(['../../orca_3_0_3/orca', fname], stdout=out)
+        return outfile
+
+    def run_task(self, fw_spec):
+        calculate_energy(self['molecule'])
+
+class AddCalculationtoDBTask(FiretaskBase):
+    _fw_name = 'AddCalctoDBTask'
+
+    def get_energy(m, f, db):
+        output_fname = calculate_energy(f)
+        mol = {}
+        atoms = []
+        egy = 0.0
+        converged = False
+        start_atoms = False
+        legy = False
+        with open(output_fname, 'r') as output:
+            if 'THE OPTIMIZATION HAS CONVERGED' in output.read():
+                print "optimization converged"
+                converged = True
+            else:
+                egy = get_energy(m, f, db)
+
+        with open(output_fname, 'r') as output:
+            print output_fname, 'file opened for parsing'
+            for line in output:
+                if 'CARTESIAN' in line and 'ANGSTROEM' in line:
+                    start_atoms = True
+
+                if start_atoms and 'CARTESIAN' not in line:
+                    if '----------' in line:
+                        pass
+                    elif line == '\n':
+                        start_atoms = False
+                    else:
+                        atom = {}
+                        match = re.search(r'\s*(?P<atom>[A-Z][a-z]*)' +
+                                          r'\s*(?P<x>\-*[0-9]+\.[0-9]+)' +
+                                          r'\s*(?P<y>\-*[0-9]+\.[0-9]+)' +
+                                          r'\s*(?P<z>\-*[0-9]+\.[0-9]+)', line)
+
+                        atom['elementSymbol'] = match.group('atom')
+                        coords = [match.group(i) for i in ['x', 'y', 'z']]
+                        atom['cartesianCoordinates'] = \
+                                {'value' : coords, 'units' : 'Angstrom'}
+                        atoms.append(atom)
+
+                if 'Total Energy' in line:
+                    egy = line.split()[3]
+                    legy = True
+                    print "breaking out!"
+                    break
+
+            print output_fname, 'file closed'
+
+        if legy:
+            print 'thank god an energy was found -- adding to DB'
+            #    db['parentInchi'] = m.GetTitle(mol_string)
+            db['childInchi'] = obc.WriteString(m)
+            obc.SetOutFormat('smi')
+            db['childSmiles'] = obc.WriteString(m)
+            obc.SetOutFormat('inchi')
+            db['molecularFormula'] = m.GetFormula()
+            mol['atoms'] = atoms
+            db['molecule'] = mol
+            db['totalEnergy'] = {"value": egy, "units": "Hartree"}
+
+        else:
+            print "no energy was found for ", m.GetFormula()
+            egy = get_energy(m, f, db)
+
+        print 'get_energy is returning properly'
+        return egy
+
+
+    def run_task(self):
+        get_energy()
