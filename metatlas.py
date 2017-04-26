@@ -19,18 +19,18 @@ class ComputeEnergyTask(FiretaskBase):
     required_params = ['input_string', 'calc_details']
 
     def _write_string_to_orca_file(self, formula, input_string):
-        input_name = '../scr/' + formula + '.inp'
+        input_name = formula + '.inp'
         with open(input_name, 'w') as f:
             f.write(input_string)
 
         return
 
     def _calculate_energy(self):
-        fname = '../scr/' + self.formula + '.inp'
+        fname = self.formula + '.inp'
         path_to_output = self.formula + '.out'
-        subprocess.call(['cp',fname,'.'], stdout=None)
+        subprocess.call(['cp',fname,'.'])
         f = open(path_to_output, 'w')
-        subprocess.call(['srun', '-n', '12', 'orca', self.formula+'.inp'], stdout=f)
+        subprocess.call(['srun', 'orca', self.formula+'.inp'], stdout=f)
         f.close()
 
         return path_to_output
