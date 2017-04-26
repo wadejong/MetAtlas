@@ -1,13 +1,13 @@
 #!/bin/bash
 
-#PBS -l nodes=$${nnodes}
-#PBS -l walltime=$${walltime}
-#PBS -q $${queue}
-#PBS -A $${account}
-#PBS -G $${group_name}
-#PBS -N $${job_name}
-#PBS -o FW_job.out
-#PBS -e FW_job.error
+#SLURM -N $${nnodes}
+#SLURM -l nodes=$${nnodes}
+#SLURM -t $${walltime}
+#SLURM -p $${queue}
+#SLURM -A $${account}
+#SLURM -o $${job_name}.out
+#SLURM -e $${job_name}.error
+#SLURM -J $${job_name}
 
 $${pre_rocket}
 cd $${launch_dir}
