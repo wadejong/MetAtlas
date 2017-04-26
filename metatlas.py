@@ -39,7 +39,8 @@ class ComputeEnergyTask(FiretaskBase):
         formula = self['calc_details']['molecular_formula']
         input_string = self['input_string']
         self._write_string_to_orca_file(formula, input_string)
-        path_to_output = self._calculate_energy()
+        subprocess.call(['echo','hello','>','hello.txt'])
+        # path_to_output = self._calculate_energy()
 
         # try:
         # except:  # some kind of fault error
