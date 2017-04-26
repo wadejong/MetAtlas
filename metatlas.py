@@ -28,10 +28,9 @@ class ComputeEnergyTask(FiretaskBase):
     def _calculate_energy(self):
         fname = self.formula + '.inp'
         path_to_output = self.formula + '.out'
-        # with open(path_to_output, 'w') as f:
-        #     subprocess.call(['srun', '-n', '8', 'orca', self.formula+'.inp'], stdout=f)
-
-        subprocess.call(['echo','hello','>','hello.txt'])
+        with open(path_to_output, 'w') as f:
+            p = subprocess.Popen(['srun', '-n', '8', 'orca', self.formula+'.inp'], stdout=f)
+            p.wait()
 
         return path_to_output
 
@@ -39,8 +38,7 @@ class ComputeEnergyTask(FiretaskBase):
         formula = self['calc_details']['molecular_formula']
         input_string = self['input_string']
         self._write_string_to_orca_file(formula, input_string)
-        subprocess.call(['echo','hello','>','hello.txt'])
-        # path_to_output = self._calculate_energy()
+        path_to_output = self._calculate_energy()
 
         # try:
         # except:  # some kind of fault error
