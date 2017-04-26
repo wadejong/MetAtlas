@@ -1,7 +1,6 @@
 #!/bin/bash
 
 #SLURM -N $${nnodes}
-#SLURM -l nodes=$${nnodes}
 #SLURM -t $${walltime}
 #SLURM -p $${queue}
 #SLURM -A $${account}
