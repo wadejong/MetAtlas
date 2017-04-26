@@ -19,7 +19,7 @@ class ComputeEnergyTask(FiretaskBase):
     required_params = ['input_string', 'calc_details']
 
     def _write_string_to_orca_file(self, formula, input_string):
-        input_name = 'scr/' + formula + '.inp'
+        input_name = '../scr/' + formula + '.inp'
         with open(input_name, 'w') as f:
             f.write(input_string)
 
