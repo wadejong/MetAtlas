@@ -29,7 +29,7 @@ class ComputeEnergyTask(FiretaskBase):
         fname = self.formula + '.inp'
         path_to_output = self.formula + '.out'
         with open(path_to_output, 'w') as f:
-            p = subprocess.Popen(['srun', '-n', '8', 'orca', self.formula+'.inp'], stdout=f)
+            p = subprocess.Popen(['srun', '-n', '24', 'orca', self.formula+'.inp'], stdout=f)
             p.wait()
 
         return path_to_output
