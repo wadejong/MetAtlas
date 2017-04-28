@@ -39,18 +39,18 @@ class ComputeEnergyTask(FiretaskBase):
         formula = self['calc_details']['molecular_formula']
         input_string = self['input_string']
         self._write_string_to_orca_file(formula, input_string)
-        path_to_output = self._calculate_energy()
 
-        # try:
-        # except:  # some kind of fault error
-        #     rerun_fw = Firework(ComputeEnergyTask(input_string=self['input_string'],
-        #                                           calc_details=self['calc_details']),
-        #                         name=formula)
-        #     return FWAction(detours=rerun_fw)
-        # else:
-        #     process_fw = Firework(AddCalculationtoDBTask(path_to_calc_output=path_to_output))
-        #     return FWAction(stored_data={'path_to_calc_output':path_to_output},
-        #                     additions=process_fw)
+        try:
+            path_to_output = self._calculate_energy()
+        except:  # some kind of fault error
+            rerun_fw = Firework(ComputeEnergyTask(input_string=self['input_string'],
+                                                  calc_details=self['calc_details']),
+                                name=formula)
+            return FWAction(detours=rerun_fw)
+        else:
+            process_fw = Firework(AddCalculationtoDBTask(path_to_calc_output=path_to_output))
+            return FWAction(stored_data={'path_to_calc_output':path_to_output},
+                            additions=process_fw)
 
         # raise
 
@@ -104,10 +104,13 @@ class AddCalculationtoDBTask(FiretaskBase):
         coords = self._get_optimized_coords(self['input_file'])
 
         return FWAction(
-            stored_data={'energy': {
-                'value': energy,
-                'units': 'Hartree'
-            }})
+            stored_data={
+                'energy': {
+                    'value': energy,
+                    'units': 'Hartree'
+                },
+                'optimized_coords': coords
+            })
 
 
 # def protonate(m, atom, db):
