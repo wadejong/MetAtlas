@@ -42,6 +42,11 @@ class ComputeEnergyTask(FiretaskBase):
 
         try:
             path_to_output = self._calculate_energy()
+            with open(path_to_output, 'r') as f:
+                contents = f.read()
+
+            if 'TERMINATED NORMALLY' not in contents:
+                raise
         except:  # some kind of fault error
             rerun_fw = Firework(ComputeEnergyTask(input_string=self['input_string'],
                                                   calc_details=self['calc_details']),

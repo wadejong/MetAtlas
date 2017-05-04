@@ -127,13 +127,9 @@ if __name__ == "__main__":
     PROJECT_HOME = 'scr/'
 
     metatlas_lpad = create_launchpad(METATLAS_DB_CONFIG)
-    edison = create_fworker(name='Edison')
-    slurm_adapter = create_queue_adapater(q_type='SLURM')
-
-    metatlas_lpad.reset('2017-04-20')
-
     mols = read_molecules_from_csv(CSV_FILE)
 
+    metatlas_lpad.reset('2017-05-04')
     count = 0
     for _, mol_string in mols.iteritems():
         molecule = create_pybel_molecule(mol_string)
@@ -141,20 +137,7 @@ if __name__ == "__main__":
 
         fw = Firework(ComputeEnergyTask(input_string=orca_string,
                                         calc_details=calc_details),
-                      name=molecule.formula)
+                        name=molecule.formula)
 
         metatlas_lpad.add_wf(fw)
-
-        if count > 100:
-            break
-        else:
-            count += 1
-        # id = metatlas_lpad.get_new_launch_id()
-        # launch_rocket_to_queue(metatlas_lpad,
-        #                        edison,
-        #                        slurm_adapter,
-        #                        launcher_dir=PROJECT_HOME,
-        #                        create_launcher_dir=True,
-        #                        fw_id=id)
-
 #perform_work(mols['UCMIRNVEIXFBKS-UHFFFAOYSA-N'])
