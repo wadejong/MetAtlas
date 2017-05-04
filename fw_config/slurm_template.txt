@@ -1,6 +1,7 @@
-#!/bin/bash
+#!/bin/bash -l
 
-#SLURM -N $${nnodes}
+##SLURM -N $${nnodes}
+#SLURM -n $${cpus_per_task}
 #SLURM -t $${walltime}
 #SLURM -p $${queue}
 #SLURM -A $${account}

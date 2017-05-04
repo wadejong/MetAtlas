@@ -6,7 +6,7 @@ nnodes: 1
 cpus_per_task: 1
 ntasks_per_node: 1
 walltime: '04:00:00'
-queue: regular
+queue: shared
 account: m2485
 job_name: null
 logdir: /global/homes/b/bkrull/logdir
