@@ -57,7 +57,6 @@ class ComputeEnergyTask(FiretaskBase):
             return FWAction(stored_data={'path_to_calc_output':path_to_output},
                             additions=process_fw)
 
-        # raise
 
 
 class AddCalculationtoDBTask(FiretaskBase):
@@ -118,38 +117,47 @@ class AddCalculationtoDBTask(FiretaskBase):
             })
 
 
-# def protonate(m, atom, db):
-#     mm = ob.OBMol(m)
-#     atom.IncrementImplicitValence()
-#     mm.AddHydrogens(atom)
-#     print 'protonating atom', mm.GetFormula()
-#     total_charge = m.GetTotalCharge()
-#     m.SetTotalCharge(total_charge + 1)
-#     egy = getEnergy(m, db, mongoDB)
-#     if egy < protonationEnergy:
-#         protonated_energy = egy
-#         protonated_atom = atom.GetIdx()
-#     atom_to_delete = m.getAtom(m.NumAtoms())
-#     m.DeleteAtom(atom_to_delete)
-#     m.SetTotalCharge(total_charge)
-#     print('protonation', egy)
+
+class ProtonateMolecule(ComputeEnergyTask):
+
+    def protonate(m, atom, db):
+        mm = ob.OBMol(m)
+        atom.IncrementImplicitValence()
+        mm.AddHydrogens(atom)
+        print 'protonating atom', mm.GetFormula()
+        total_charge = m.GetTotalCharge()
+        m.SetTotalCharge(total_charge + 1)
+        egy = getEnergy(m, db, mongoDB)
+        if egy < protonationEnergy:
+            protonated_energy = egy
+            protonated_atom = atom.GetIdx()
+        atom_to_delete = m.getAtom(m.NumAtoms())
+        m.DeleteAtom(atom_to_delete)
+        m.SetTotalCharge(total_charge)
+        print('protonation', egy)
+
+    def run_task(self):
+        pass
 
 
-# def deprotonate(m, atom, db):
-#     mm = ob.OBMol(m) #     mm.DeleteAtom(atom) #     print 'deprotonating atom', mm.GetFormula()
-#     mm.SetTotalCharge(m.GetTotalCharge() - 1)
-#     try:
-#         egy = get_energy(mm, db)
-#     except:
-#         print "failed to assign deprot energy"
+class DeprotonateMolecule(ComputeEnergyTask):
+    def deprotonate(m, atom, db):
+        mm = ob.OBMol(m) #     mm.DeleteAtom(atom) #     print 'deprotonating atom', mm.GetFormula()
+        mm.SetTotalCharge(m.GetTotalCharge() - 1)
+        try:
+            egy = get_energy(mm, db)
+        except:
+            print "failed to assign deprot energy"
 
-#     deprotonated_energy = 0
-#     if egy < deprotonated_energy:
-#         deprotonated_energy = egy
-#     for connected_atom in ob.OBAtomAtomIter(atom):
-#         deprotonated_atom = connectedAtom.GetIdx()
-#         print('deprotonation', egy)
+        deprotonated_energy = 0
+        if egy < deprotonated_energy:
+            deprotonated_energy = egy
+        for connected_atom in ob.OBAtomAtomIter(atom):
+            deprotonated_atom = connectedAtom.GetIdx()
+            print('deprotonation', egy)
 
+    def run_task(self):
+        pass
 
 def read_molecules_from_csv(fname):
     """ given a csv file, return dict of inchikey to inchistring """

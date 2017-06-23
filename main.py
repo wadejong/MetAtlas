@@ -129,8 +129,6 @@ if __name__ == "__main__":
     metatlas_lpad = create_launchpad(METATLAS_DB_CONFIG)
     mols = read_molecules_from_csv(CSV_FILE)
 
-    metatlas_lpad.reset('2017-05-04')
-    count = 0
     for _, mol_string in mols.iteritems():
         molecule = create_pybel_molecule(mol_string)
         orca_string, calc_details = create_orca_input_string(molecule)
