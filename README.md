@@ -21,8 +21,8 @@ It's a tad non-trivial to get this whole thing setup
 TODO: setup.py/requirements.txt 
 
 ## Requirements
-1. [https://orcaforum.cec.mpg.de/](Orca) v3
-2. [https://github.com/materialsproject/fireworks](Fireworks)
+1. [Orca](https://orcaforum.cec.mpg.de/) v3
+2. [Fireworks](https://github.com/materialsproject/fireworks)
 3. Python modules
     a. mendeleev
     b. pybel
@@ -32,7 +32,7 @@ TODO: setup.py/requirements.txt
 A pre-populated CSV file containing the metatlas database is included, with 
 molecules stored in the 'inchi' format (metatlas_inchi_inchikey.csv). 
 
-The [https://github.com/materialsproject/fireworks](Fireworks) framework
+The [Fireworks](https://github.com/materialsproject/fireworks)framework
 (developed by Jain, et. al, here at LBL), is used as an interface between the
 slurm queueing system on NERSC and the the mongodb database that is used to
 catalog dataset information. 
