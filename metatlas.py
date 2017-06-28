@@ -40,81 +40,67 @@ class ComputeEnergyTask(FiretaskBase):
         input_string = self['input_string']
         self._write_string_to_orca_file(formula, input_string)
 
-        try:
-            path_to_output = self._calculate_energy()
-            with open(path_to_output, 'r') as f:
-                contents = f.read()
+        try: 
+            with open(formula+'.out', 'r') as f:
+                content = f.read()
+        except IOError:
+            print 'No output file found yet. Running!' 
+            try:
+                path_to_output = self._calculate_energy()
+                with open(path_to_output, 'r') as f:
+                    contents = f.read()
 
-            if 'TERMINATED NORMALLY' not in contents:
-                raise
-        except:  # some kind of fault error
-            rerun_fw = Firework(ComputeEnergyTask(input_string=self['input_string'],
-                                                  calc_details=self['calc_details']),
-                                name=formula)
-            return FWAction(detours=rerun_fw)
-        else:
-            process_fw = Firework(AddCalculationtoDBTask(path_to_calc_output=path_to_output))
-            return FWAction(stored_data={'path_to_calc_output':path_to_output},
-                            additions=process_fw)
+                if 'TERMINATED NORMALLY' not in contents:
+                    raise
+            except:  # some kind of fault error
+                rerun_fw = Firework(ComputeEnergyTask(input_string=self['input_string'],
+                                                      calc_details=self['calc_details']),
+                                    name=formula)
+                return FWAction(detours=rerun_fw)
+        else: 
+            if 'OPTIMIZATION RUN DONE' not in content:
+                print 'Not optimized. Running!' 
+                try:
+                    path_to_output = self._calculate_energy()
+                    with open(path_to_output, 'r') as f:
+                        contents = f.read()
 
+                    if 'TERMINATED NORMALLY' not in contents:
+                        raise
+                except:  # some kind of fault error
+                    rerun_fw = Firework(ComputeEnergyTask(input_string=self['input_string'],
+                                                          calc_details=self['calc_details']),
+                                        name=formula)
+                    return FWAction(detours=rerun_fw)
 
-
-class AddCalculationtoDBTask(FiretaskBase):
-
-    required_params = ['path_to_calc_output']
-
-    def _get_optimized_coords(self, input_file):
-        atomic_coords = []
-        with open(input_file, 'r') as output:
-            for line in output:
-                if 'CARTESIAN' in line and 'ANGSTROEM' in line:
-                    start_atoms = True
-
-                if start_atoms and 'CARTESIAN' not in line:
-                    if '----------' in line:
-                        pass
-                    elif line == '\n':
-                        start_atoms = False
-                    else:
-                        atom = {}
-                        match = re.search(r'\s*(?P<atom>[A-Z][a-z]*)' +
-                                          r'\s*(?P<x>\-*[0-9]+\.[0-9]+)' +
-                                          r'\s*(?P<y>\-*[0-9]+\.[0-9]+)' +
-                                          r'\s*(?P<z>\-*[0-9]+\.[0-9]+)', line)
-
-                        atom['elementSymbol'] = match.group('atom')
-                        coords = [match.group(i) for i in ['x', 'y', 'z']]
-                        atom['cartesianCoordinates'] = \
-                                {'value' : coords, 'units' : 'Angstrom'}
-                        atomic_coords.append(atom)
-
-            return atomic_coords
-
-    def _get_energy(self, input_file):
-        with open(input_file, 'r') as output:
-            print input_file, 'file opened for parsing'
-            for line in output:
-                if 'Total Energy' in line:
-                    egy = line.split()[3]
-                    print "breaking out!"
-                    break
-            print input_file, 'file closed'
-
-        print 'get_energy is returning properly'
-        return egy
-
-    def run_task(self, fw_spec):
-        energy = self._get_energy(self['input_file'])
-        coords = self._get_optimized_coords(self['input_file'])
+        Results = ParseResults(formula+'.trj')
 
         return FWAction(
             stored_data={
                 'energy': {
-                    'value': energy,
+                    'value': Results.energy,
                     'units': 'Hartree'
                 },
-                'optimized_coords': coords
+                'optimized_coords': Results.opt_coords
             })
+
+
+
+class ParseResults(): 
+    def __init__(self, path_to_calc_file):
+        with open(path_to_calc_file, 'r') as output:
+            content = output.readlines()
+
+        natoms = int(content[0].strip())
+        # back up 2 additional items, energy, natoms in xyz format
+        content = content[-natoms-2:]
+
+        self.opt_coords = ''.join(content)
+        self.energy = self._get_energy(content[1])
+
+    def _get_energy(self, contents): 
+        match = re.search(r'\-[0-9]+\.[0-9]+', contents) 
+        return match.group(0)
 
 
 
