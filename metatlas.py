@@ -40,11 +40,11 @@ class ComputeEnergyTask(FiretaskBase):
         input_string = self['input_string']
         self._write_string_to_orca_file(formula, input_string)
 
-        try: 
+        try:
             with open(formula+'.out', 'r') as f:
                 content = f.read()
         except IOError:
-            print 'No output file found yet. Running!' 
+            print 'No output file found yet. Running!'
             try:
                 path_to_output = self._calculate_energy()
                 with open(path_to_output, 'r') as f:
@@ -57,9 +57,9 @@ class ComputeEnergyTask(FiretaskBase):
                                                       calc_details=self['calc_details']),
                                     name=formula)
                 return FWAction(detours=rerun_fw)
-        else: 
+        else:
             if 'OPTIMIZATION RUN DONE' not in content:
-                print 'Not optimized. Running!' 
+                print 'Not optimized. Running!'
                 try:
                     path_to_output = self._calculate_energy()
                     with open(path_to_output, 'r') as f:
@@ -86,7 +86,7 @@ class ComputeEnergyTask(FiretaskBase):
 
 
 
-class ParseResults(): 
+class ParseResults(object):
     def __init__(self, path_to_calc_file):
         with open(path_to_calc_file, 'r') as output:
             content = output.readlines()
@@ -98,10 +98,16 @@ class ParseResults():
         self.opt_coords = ''.join(content)
         self.energy = self._get_energy(content[1])
 
-    def _get_energy(self, contents): 
-        match = re.search(r'\-[0-9]+\.[0-9]+', contents) 
+    def _get_energy(self, contents):
+        match = re.search(r'\-[0-9]+\.[0-9]+', contents)
         return match.group(0)
 
+
+class AddCalculationtoDBTask(FiretaskBase):
+    required_params = ['path_to_calc_output']
+    def run_task(self, fw_spec):
+        path_to_calc_output = ' '
+        return FWAction()
 
 
 class ProtonateMolecule(ComputeEnergyTask):
@@ -144,6 +150,7 @@ class DeprotonateMolecule(ComputeEnergyTask):
 
     def run_task(self):
         pass
+
 
 def read_molecules_from_csv(fname):
     """ given a csv file, return dict of inchikey to inchistring """
