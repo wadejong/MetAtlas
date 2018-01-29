@@ -12,3 +12,6 @@ inp
 xyz
 TAGS
 *.pyc
+
+*.dat
+*.clean
