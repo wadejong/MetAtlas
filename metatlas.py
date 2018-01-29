@@ -13,6 +13,7 @@ import subprocess
 import pybel
 from mendeleev import element
 from fireworks import Firework, FiretaskBase, FWAction
+import psi4
 
 class ComputeEnergyTask(FiretaskBase):
     _fw_name = 'ComputeEnergyTask'
@@ -162,6 +163,15 @@ def read_molecules_from_csv(fname):
             mols[inchi_key] = inchi_string
     return mols
 
+def read_molecules_from_csv_new(fname):
+    mols = {}
+    with open(fname) as csvFile:
+        csv_reader = csv.reader(csvFile)
+        for row in csv_reader:
+            smiles, formula = row[5], row[1]
+            mols[formula] = smiles
+
+    return mols
 
 def create_pybel_molecule(inchi_string, lprint=False):
     """create an openbabel molecule from an inchistring"""
@@ -219,3 +229,10 @@ def create_orca_input_string(molecule):
 def get_n_electrons(molecule):
     elec_count = [atom.atomicnum for atom in molecule.atoms]
     return sum(elec_count)
+
+def psi4_xyzfile_to_psi4mol(fname):
+    qmol = psi4.qcdb.Molecule.init_with_xyz(fname)
+    lmol = psi4.geometry(qmol.create_psi4_string_from_molecule())
+    lmol.update_geometry()
+
+    return lmol
