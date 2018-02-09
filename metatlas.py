@@ -8,12 +8,27 @@ molecules in the Metatlas database.
 | Input   |    | Calc   |    | File    |
 -----------    ----------    -----------
 """
+import pandas as pd
 import re
 import subprocess
 import pybel
+from rdkit import Chem
+from rdkit.Chem import AllChem
+from os import remove
 from mendeleev import element
 from fireworks import Firework, FiretaskBase, FWAction
 import psi4
+
+try:
+    termtype = get_ipython().__class__.__name__
+except:
+    from tqdm import tqdm as tqdm
+else:
+    if 'ZMQ' in termtype:
+        from tqdm import tqdm_notebook as tqdm
+    else:
+        from tqdm import tqdm as tqdm
+
 
 class ComputeEnergyTask(FiretaskBase):
     _fw_name = 'ComputeEnergyTask'
@@ -26,7 +41,7 @@ class ComputeEnergyTask(FiretaskBase):
 
         return
 
-    def _calculate_energy(self):
+    def _optimize_with_orca(self):
         formula = self['calc_details']['molecular_formula']
         fname = formula + '.inp'
         path_to_output = formula + '.out'
@@ -47,7 +62,7 @@ class ComputeEnergyTask(FiretaskBase):
         except IOError:
             print 'No output file found yet. Running!'
             try:
-                path_to_output = self._calculate_energy()
+                path_to_output = self._optimize_with_orca()
                 with open(path_to_output, 'r') as f:
                     contents = f.read()
 
@@ -84,7 +99,6 @@ class ComputeEnergyTask(FiretaskBase):
                 },
                 'optimized_coords': Results.opt_coords
             })
-
 
 
 class ParseResults(object):
@@ -153,6 +167,60 @@ class DeprotonateMolecule(ComputeEnergyTask):
         pass
 
 
+def make_df_with_molecules_from_csv(csv_file, reset=False):
+    if reset:
+        try:
+            remove('molecules.pkl')
+        except:
+            pass
+
+    try:
+        df = pd.read_pickle('molecules.pkl')
+    except IOError:
+        print 'No pickle to recover'
+    else:
+        return df
+
+    df = pd.read_csv(csv_file)
+    molecules = []
+    kekulized = []
+    key_used = []
+    for index, row in tqdm(df.iterrows(), total=len(df)):
+        mol = None
+        for key in ['sanitized_smiles', 'original_smiles']:#, 'sanitized_inchikey']:
+            mol_string = row[key]
+            try:
+                mol = Chem.MolFromSmiles(mol_string)
+            except TypeError:
+                continue
+            else:
+                if mol:
+                    key_used.append(key)
+                    break
+
+        if not mol:
+            molecules.append('no')
+            key_used.append(None)
+            kekulized.append('no')
+            continue
+
+        try:
+            Chem.rdmolops.Kekulize(mol, clearAromaticFlags=True)
+            kekulized.append('yes')
+        except:
+            kekulized.append('no')
+
+        mol = Chem.AddHs(mol)
+        molecules.append(mol)
+
+    df['molecule'] = molecules
+    df['kekulized'] = kekulized
+    df['key_used'] = key_used
+
+    df.to_pickle('molecules.pkl')
+
+    return df
+
 def read_molecules_from_csv(fname):
     """ given a csv file, return dict of inchikey to inchistring """
     mols = {}
@@ -190,7 +258,6 @@ def create_pybel_molecule(inchi_string, lprint=False):
 
         return molecule
 
-
 def create_orca_input_string(molecule):
     charge = molecule.charge
     nelectrons = get_n_electrons(molecule)
@@ -224,7 +291,6 @@ def create_orca_input_string(molecule):
     orca_string += '%scf\n MaxIter 1500\n end\n'
 
     return orca_string, calc_details
-
 
 def get_n_electrons(molecule):
     elec_count = [atom.atomicnum for atom in molecule.atoms]
