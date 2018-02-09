@@ -168,6 +168,16 @@ class DeprotonateMolecule(ComputeEnergyTask):
 
 
 def make_df_with_molecules_from_csv(csv_file, reset=False):
+    """
+    This function takes in a csv file like the ones Ben has been sending
+    around.
+    1 creates DataFrame from csv
+    2 iterate rows in DataFrame, creating an rdkit.Chem.rdchem.Mol object
+        If 'original_smiles' is available, this will be used to generate the
+        rdkit.Chem.rdchem.Mol using Chem.MolFromSmiles.
+    It will save the entire DataFrame as 'molecules.pkl' and can try to recover
+    it as well.
+    """
     if reset:
         try:
             remove('molecules.pkl')
@@ -187,7 +197,7 @@ def make_df_with_molecules_from_csv(csv_file, reset=False):
     key_used = []
     for index, row in tqdm(df.iterrows(), total=len(df)):
         mol = None
-        for key in ['sanitized_smiles', 'original_smiles']:#, 'sanitized_inchikey']:
+        for key in ['original_smiles', 'sanitized_smiles']:#, 'sanitized_inchikey']:
             mol_string = row[key]
             try:
                 mol = Chem.MolFromSmiles(mol_string)
