@@ -53,7 +53,6 @@ def create_queue_adapater(q_type):
 
 if __name__ == "__main__":
     METATLAS_DB_CONFIG = '/home/bkrull/.fireworks/metatlas.ini'
-    CSV_FILE = 'metatlas_inchi_inchikey.csv'
     CSV_FILE = './chebi_and_metacyc_molecules-short.csv'
     PROJECT_HOME = 'scr/'
 

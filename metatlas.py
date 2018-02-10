@@ -68,7 +68,7 @@ class ComputeEnergyTask(FiretaskBase):
         return output
 
     def _optimize_with_psi4(self, xyzfile):
-        psi4mol = psi4_xyzfile_to_psi4mol(xyzfile)
+        psi4mol = xyzfile_to_psi4mol(xyzfile)
         e, wfn = psi4.optimize('pbeh3c/def2-svp', molecule=psi4mol)
 
         output = wfn.gradient().print_out()
@@ -326,7 +326,7 @@ def get_n_electrons(molecule, rdkit=True):
         elec_count = [atom.atomicnum for atom in molecule.atoms]
     return sum(elec_count)
 
-def psi4_xyzfile_to_psi4mol(fname):
+def xyzfile_to_psi4mol(fname):
     qmol = psi4.qcdb.Molecule.init_with_xyz(fname)
     lmol = psi4.geometry(qmol.create_psi4_string_from_molecule())
     lmol.update_geometry()
