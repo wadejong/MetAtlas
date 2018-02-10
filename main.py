@@ -8,12 +8,15 @@ molecules in the Metatlas database.
 | Input   |    | Calc   |    | File    |
 -----------    ----------    -----------
 """
+import pandas as pd
 from configparser import SafeConfigParser
 from fireworks import Firework, LaunchPad, Workflow, FWorker
 from fireworks.user_objects.queue_adapters.common_adapter import CommonAdapter
 from fireworks.user_objects.metatlas import ComputeEnergyTask, AddCalculationtoDBTask
 from fireworks.queue.queue_launcher import launch_rocket_to_queue
-from metatlas import read_molecules_from_csv, create_pybel_molecule, create_orca_input_string
+from metatlas import create_orca_input_string, make_df_with_molecules_from_csv
+from tqdm import tqdm
+from subprocess import check_output
 
 
 def create_launchpad(db_config_file):
@@ -51,29 +54,15 @@ def create_queue_adapater(q_type):
 if __name__ == "__main__":
     METATLAS_DB_CONFIG = '/home/bkrull/.fireworks/metatlas.ini'
     CSV_FILE = 'metatlas_inchi_inchikey.csv'
+    CSV_FILE = './chebi_and_metacyc_molecules-short.csv'
     PROJECT_HOME = 'scr/'
 
     metatlas_lpad = create_launchpad(METATLAS_DB_CONFIG)
-    mols = read_molecules_from_csv(CSV_FILE)
+    molecules = make_df_with_molecules_from_csv(CSV_FILE, reset=True)
 
-    mol = 'C44H76NO8P'
-    fw = Firework(AddCalculationtoDBTask(input_file=mol + '.out'), name=mol)
-    wf = Workflow([fw])
-    metatlas_lpad.append_wf(wf, [179949])
+    for index, row in tqdm(molecules.iterrows()):
+        orca_string, calc_details = create_orca_input_string(row['molecule'])
 
-#    for _, mol_string in mols.iteritems():
-#        molecule = create_pybel_molecule(mol_string)
-#        orca_string, calc_details = create_orca_input_string(molecule)
-#
-#        fw1 = Firework(ComputeEnergyTask(input_string=orca_string,
-#                                         calc_details=calc_details),
-#                       name=molecule.formula)
-#        fw2 = Firework(AddCalculationtoDBTask(input_file=molecule.formula+'.out'),
-#                       name=molecule.formula)
-#
-#        wf = Workflow([fw1, fw2], {fw1: [fw2]})
-#
-#        metatlas_lpad.add_wf(wf)
-#        print molecule.formula
-#        raise
-#perform_work(mols['UCMIRNVEIXFBKS-UHFFFAOYSA-N'])
+        fw = Firework(ComputeEnergyTask(input_string=orca_string,
+                                        calc_details=calc_details)
+        metatlas_lpad.add_wf(fw)
