@@ -10,12 +10,12 @@ molecules in the Metatlas database.
 """
 import pandas as pd
 import re
-import subprocess
 import pybel
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from os import remove
 from mendeleev import element
+from subprocess import check_output
 from fireworks import Firework, FiretaskBase, FWAction
 import psi4
 
@@ -44,53 +44,56 @@ class ComputeEnergyTask(FiretaskBase):
     def _optimize_with_orca(self):
         formula = self['calc_details']['molecular_formula']
         fname = formula + '.inp'
-        path_to_output = formula + '.out'
-        with open(path_to_output, 'w') as f:
-            p = subprocess.Popen(['srun', 'orca', formula+'.inp'], stdout=f)
-            p.wait()
+        self._write_string_to_orca_file(formula, input_string)
+        iter = 0
+        output = ''
 
-        return path_to_output
+        try:
+            with open(formula+'.out', 'r') as f:
+                output = f.read()
+        except IOError:
+            while 'OPTIMIZATION RUN DONE' not in output and \
+                  'TERMINATED NORMALLY' not in output:
+
+                iter += 1
+                output = check_output(['srun', 'orca',
+                                    formula+'.inp'], stdout=f)
+
+                if iter > 4:
+                    raise ValueError, "unable to reach opt convergence"
+
+            with open(formula+'.out', 'w') as f:
+                f.write(output)
+
+        return output
+
+    def _optimize_with_psi4(self, xyzfile):
+        psi4mol = psi4_xyzfile_to_psi4mol(xyzfile)
+        e, wfn = psi4.optimize('pbeh3c/def2-svp', molecule=psi4mol)
+
+        output = wfn.gradient().print_out()
+
+        return output
 
     def run_task(self, fw_spec):
         formula = self['calc_details']['molecular_formula']
         input_string = self['input_string']
-        self._write_string_to_orca_file(formula, input_string)
 
         try:
-            with open(formula+'.out', 'r') as f:
-                content = f.read()
-        except IOError:
-            print 'No output file found yet. Running!'
-            try:
-                path_to_output = self._optimize_with_orca()
-                with open(path_to_output, 'r') as f:
-                    contents = f.read()
-
-                if 'TERMINATED NORMALLY' not in contents:
-                    raise
-            except:  # some kind of fault error
-                rerun_fw = Firework(ComputeEnergyTask(input_string=self['input_string'],
-                                                      calc_details=self['calc_details']),
-                                    name=formula)
-                return FWAction(detours=rerun_fw)
+            output = self._optimize_with_orca()
+        except ValueError:  # some kind of fault error
+            # DON"T KNOW WHAT GOES HERE YET"
+            rerun_fw = Firework(ComputeEnergyTask(input_string=self['input_string'],
+                                                    calc_details=self['calc_details']),
+                                name=formula)
+            return FWAction(detours=rerun_fw)
         else:
-            if 'OPTIMIZATION RUN DONE' not in content:
-                print 'Not optimized. Running!'
-                try:
-                    path_to_output = self._calculate_energy()
-                    with open(path_to_output, 'r') as f:
-                        contents = f.read()
+            # Parse results needs a new format to better store more info
+            Results = ParseResults(formula+'.trj')
 
-                    if 'TERMINATED NORMALLY' not in contents:
-                        raise
-                except:  # some kind of fault error
-                    rerun_fw = Firework(ComputeEnergyTask(input_string=self['input_string'],
-                                                          calc_details=self['calc_details']),
-                                        name=formula)
-                    return FWAction(detours=rerun_fw)
 
-        Results = ParseResults(formula+'.trj')
-
+        # write optimized XYZ coords to file
+        # run psi4 pbeh3c
         return FWAction(
             stored_data={
                 'energy': {
@@ -197,7 +200,7 @@ def make_df_with_molecules_from_csv(csv_file, reset=False):
     key_used = []
     for index, row in tqdm(df.iterrows(), total=len(df)):
         mol = None
-        for key in ['original_smiles', 'sanitized_smiles']:#, 'sanitized_inchikey']:
+        for key in ['sanitized_smiles', 'original_smiles']:#, 'sanitized_inchikey']:
             mol_string = row[key]
             try:
                 mol = Chem.MolFromSmiles(mol_string)
@@ -221,6 +224,11 @@ def make_df_with_molecules_from_csv(csv_file, reset=False):
             kekulized.append('no')
 
         mol = Chem.AddHs(mol)
+        try:
+            AllChem.EmbedMolecule(mol)
+        except RuntimeError:
+            mol = None
+
         molecules.append(mol)
 
     df['molecule'] = molecules
@@ -269,11 +277,11 @@ def create_pybel_molecule(inchi_string, lprint=False):
         return molecule
 
 def create_orca_input_string(molecule):
-    charge = molecule.charge
+    charge = Chem.GetFormalCharge(molecule)
     nelectrons = get_n_electrons(molecule)
     mult = (1 if (nelectrons + charge) % 2 == 0 else 2)
     calc_details = {
-        "molecular_formula": molecule.formula,
+        "molecular_formula": Chem.rdMolDescriptors.CalcMolFormula(molecule),
         "molecularSpinMultiplicity": mult,
         "charge": charge,
         "numberOfElectrons": nelectrons,
@@ -288,12 +296,21 @@ def create_orca_input_string(molecule):
     orca_string += ' Charge ' + str(charge) + '\n'
     orca_string += ' Mult ' + str(mult) + '\n coords\n'
 
-    for atom in molecule.atoms:
+    natoms = molecule.GetNumAtoms()
+    try:
+        conf = molecule.GetConformer()
+    except ValueError:
+        return None, None
+
+    for idx in range(natoms):
+        atom = molecule.GetAtomWithIdx(idx)
+        xyz = conf.GetAtomPosition(idx)
+
         tmp = ''
-        tmp += ' ' + str(element(atom.atomicnum).symbol)
-        tmp += ' ' + str(atom.coords[0])
-        tmp += ' ' + str(atom.coords[1])
-        tmp += ' ' + str(atom.coords[2]) + ' \n'
+        tmp += ' ' + str(atom.GetSymbol())
+        tmp += ' ' + str(xyz.x)
+        tmp += ' ' + str(xyz.y)
+        tmp += ' ' + str(xyz.z) + ' \n'
         orca_string += tmp
 
     orca_string += ' end\nend\n'
@@ -302,8 +319,11 @@ def create_orca_input_string(molecule):
 
     return orca_string, calc_details
 
-def get_n_electrons(molecule):
-    elec_count = [atom.atomicnum for atom in molecule.atoms]
+def get_n_electrons(molecule, rdkit=True):
+    if rdkit:
+        elec_count = [atom.GetAtomicNum() for atom in molecule.GetAtoms()]
+    else:
+        elec_count = [atom.atomicnum for atom in molecule.atoms]
     return sum(elec_count)
 
 def psi4_xyzfile_to_psi4mol(fname):
