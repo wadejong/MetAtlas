@@ -15,3 +15,7 @@ TAGS
 
 *.dat
 *.clean
+orca*
+/molecules.pkl
+stdout.*K
+stdout.*
