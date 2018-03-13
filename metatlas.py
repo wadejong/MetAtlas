@@ -11,12 +11,14 @@ molecules in the Metatlas database.
 import pandas as pd
 import re
 import pybel
+import numpy as np
+from configparser import SafeConfigParser
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from os import remove
 from mendeleev import element
-from subprocess import check_output
-from fireworks import Firework, FiretaskBase, FWAction
+from subprocess import Popen, PIPE
+from fireworks import Firework, LaunchPad, FiretaskBase, FWAction
 import psi4
 
 try:
@@ -30,9 +32,151 @@ else:
         from tqdm import tqdm as tqdm
 
 
-class ComputeEnergyTask(FiretaskBase):
-    _fw_name = 'ComputeEnergyTask'
-    required_params = ['input_string', 'calc_details']
+class RDKitUFFOptimize(FiretaskBase):
+    _fw_name = 'RDKitUFFOptimize'
+    required_params = ['smiles_string']
+
+    def run_task(self, fw_spec):
+        smiles_string = self['smiles_string']
+        try:
+            mol = Chem.MolFromSmiles(smiles_string)
+        except TypeError:
+            raise
+
+        try:
+            Chem.rdmolops.Kekulize(mol, clearAromaticFlags=True)
+        except:
+            pass
+
+        mol = Chem.AddHs(mol)
+
+        try:
+            AllChem.EmbedMolecule(mol)
+            AllChem.UFFOptimizeMolecule(mol)
+        except RuntimeError:
+            mol = None
+
+        return FWAction(
+            stored_data={'uff_optimized_mol': mol},
+            mod_spec=[{'_push': {'input_mol': mol}}]
+        )
+
+
+class OBUFFOptimize(FiretaskBase):
+    _fw_name = 'OBUFFOptimize'
+    required_params = ['smiles_string']
+
+    @staticmethod
+    def _create_pybel_molecule(smiles_string, lprint=False):
+        """create an openbabel molecule from an inchistring"""
+        smiles = str(smiles_string)
+        try:
+            molecule = pybel.readstring('smi', smiles, opt={})
+        except TypeError:
+            print type(smiles_string)
+            print 'Unable to convert smiles string {} to pybel.Molecule'.format(smiles_string)
+            raise
+        else:
+            molecule.title = molecule.formula
+            molecule.addh()
+
+            return molecule
+
+    def run_task(self, fw_spec):
+        smiles = self['smiles_string']
+
+        obmol = self._create_pybel_molecule(smiles)
+        try:
+            obmol.make3D()
+            obmol.localopt()
+        except:
+            pass
+
+        xyzfile = '{}-uff.xyz'.format(obmol.formula)
+        obmol.write('xyz', filename=xyzfile, overwrite=True)
+
+        orca_string = self.create_orca_input_string(obmol)
+        formula = obmol.formula
+
+        return FWAction(
+            stored_data={'mol': obmol,
+                         'moltype': 'openbabel'},
+            mod_spec=[{'_push': {'orca_string': orca_string,
+                                 'formula': formula}}]
+        )
+
+    def create_orca_input_string(self, molecule):
+        charge = molecule.charge
+        nelectrons = get_n_electrons(molecule, rdkit=False)
+        mult = (1 if (nelectrons + charge) % 2 == 0 else 2)
+        calc_details = {
+            "molecular_formula": molecule.formula,
+            "molecularSpinMultiplicity": mult,
+            "charge": charge,
+            "numberOfElectrons": nelectrons,
+            "waveFunctionTheory": "PM3"
+        }
+
+        orca_string = ''
+        orca_string += '%MaxCore 6000\n'
+        orca_string += '!COPT\n'
+        orca_string += '!SlowConv\n'
+        orca_string += '!NOSOSCF\n'
+        orca_string += '!PM3 Opt \n%coords \n  CTyp xyz\n'
+        orca_string += ' Charge ' + str(charge) + '\n'
+        orca_string += ' Mult ' + str(mult) + '\n coords\n'
+
+        for atom in molecule.atoms:
+            tmp = ''
+            tmp += ' ' + str(element(atom.atomicnum).symbol)
+            tmp += ' ' + str(atom.coords[0])
+            tmp += ' ' + str(atom.coords[1])
+            tmp += ' ' + str(atom.coords[2]) + ' \n'
+            orca_string += tmp
+
+        orca_string += ' end\nend\n'
+        orca_string += '%geom\n MaxIter 200\n end\n'
+        orca_string += '%scf\n MaxIter 1500\n end\n'
+
+        return orca_string, calc_details
+
+
+class Psi4Optimize(FiretaskBase):
+    _fw_name = 'Psi4Optimize'
+    required_params = ['xyzfile']
+
+    @staticmethod
+    def _xyzfile_to_psi4mol(fname):
+        qmol = psi4.qcdb.Molecule.init_with_xyz(fname)
+        lmol = psi4.geometry(qmol.create_psi4_string_from_molecule())
+        lmol.update_geometry()
+
+        return lmol
+
+    @staticmethod
+    def _optimize_with_psi4(self, xyzfile):
+        psi4mol = xyzfile_to_psi4mol(xyzfile)
+        e, wfn = psi4.optimize('pbeh3c/def2-svp', molecule=psi4mol)
+
+        output = wfn.gradient().print_out()
+
+        return output
+
+    def run_task(self, fw_spec):
+        xyzfile = self['xyzfile']
+
+        psi4mol = self._xyzfile_to_psi4mol(xyzfile)
+        output = self._optimize_with_psi4(psi4mol)
+
+        return FWAction(
+            stored_data={'optcoords': output}
+        )
+
+
+class OrcaOptimize(FiretaskBase):
+    _fw_name = 'OrcaOptimize'
+    optional_params = ['orca_string', 'formula']
+    # required_params = ['input_string', 'calc_details']
 
     def _write_string_to_orca_file(self, formula, input_string):
         input_name = formula + '.inp'
@@ -41,10 +185,7 @@ class ComputeEnergyTask(FiretaskBase):
 
         return
 
-    def _optimize_with_orca(self):
-        formula = self['calc_details']['molecular_formula']
-        fname = formula + '.inp'
-        self._write_string_to_orca_file(formula, input_string)
+    def _optimize_with_orca(self, formula):
         iter = 0
         output = ''
 
@@ -56,9 +197,11 @@ class ComputeEnergyTask(FiretaskBase):
                   'TERMINATED NORMALLY' not in output:
 
                 iter += 1
-                output = check_output(['srun', 'orca',
-                                    formula+'.inp'], stdout=f)
+                # output = check_output(['srun', 'orca',
+                #                     formula+'.inp'], stdout=f)
 
+                process = Popen(['orca', formula+'.inp'], stdout=PIPE)
+                output, err = process.communicate()
                 if iter > 4:
                     raise ValueError, "unable to reach opt convergence"
 
@@ -67,54 +210,126 @@ class ComputeEnergyTask(FiretaskBase):
 
         return output
 
-    def _optimize_with_psi4(self, xyzfile):
-        psi4mol = xyzfile_to_psi4mol(xyzfile)
-        e, wfn = psi4.optimize('pbeh3c/def2-svp', molecule=psi4mol)
-
-        output = wfn.gradient().print_out()
-
-        return output
-
     def run_task(self, fw_spec):
-        formula = self['calc_details']['molecular_formula']
-        input_string = self['input_string']
+        orca_string = fw_spec['orca_string'][0][0]
+        formula = fw_spec['formula'][0]
+        self._write_string_to_orca_file(formula, orca_string)
 
         try:
-            output = self._optimize_with_orca()
+            output = self._optimize_with_orca(formula)
         except ValueError:  # some kind of fault error
             # DON"T KNOW WHAT GOES HERE YET"
-            rerun_fw = Firework(ComputeEnergyTask(input_string=self['input_string'],
-                                                    calc_details=self['calc_details']),
-                                name=formula)
-            return FWAction(detours=rerun_fw)
-        else:
+            # rerun_fw = Firework(ComputeEnergyTask(input_string=self['input_string'],
+            #                                         calc_details=self['calc_details']),
+            #                     name=formula)
+            # return FWAction(detours=rerun_fw)
+            pass
+
             # Parse results needs a new format to better store more info
-            Results = ParseResults(formula+'.trj')
+        try:
+            Results = ParseResults(formula)
+        except IOError:
+            raise
 
-
-        # write optimized XYZ coords to file
-        # run psi4 pbeh3c
         return FWAction(
             stored_data={
-                'energy': {
-                    'value': Results.energy,
-                    'units': 'Hartree'
-                },
-                'optimized_coords': Results.opt_coords
+                'coords': Results.coords,
+                'grads': Results.grads,
+                'energies': Results.energies,
+                'atom_list': Results.atom_list
             })
 
 
 class ParseResults(object):
-    def __init__(self, path_to_calc_file):
-        with open(path_to_calc_file, 'r') as output:
-            content = output.readlines()
+    def __init__(self, formula):
+        try:
+            with open(formula+'.opt') as f:
+                contents = f.readlines()
+        except IOError:
+            raise IOError, 'no output file to parse'
+        self.coords, self.grads, self.energies = self._parse_orca_opt_file(contents)
 
-        natoms = int(content[0].strip())
-        # back up 2 additional items, energy, natoms in xyz format
-        content = content[-natoms-2:]
+        try:
+            with open(formula+'.out') as f:
+                contents = f.readlines()
+        except IOError:
+            raise IOError, 'no output file to parse'
 
-        self.opt_coords = ''.join(content)
-        self.energy = self._get_energy(content[1])
+        natoms = len(self.coords[1,:,1])
+        self.atom_list = self._get_orca_atom_list(natoms, contents)
+
+    def _parse_orca_opt_file(self, contents):
+        steps = {'coords': [], 'gradients': [], 'energies': []}
+        coords = []
+        grads = []
+        energies = []
+        get_dims = False
+        start = ''
+        dims = [1111]
+
+        for i, line in enumerate(contents):
+            if 'coordinates' in line:
+                start = 'coords'
+                get_dims = True
+                continue
+            elif 'energies' in line:
+                start = 'energies'
+                get_dims = True
+                continue
+            elif 'gradients' in line:
+                start = 'gradients'
+                get_dims = True
+                continue
+
+            if get_dims:
+                dims = map(int, line.split())
+                get_dims = False
+                continue
+
+            if len(steps['gradients']) == dims[0]:
+                break
+
+            if 'coords' in start:
+                coords.extend(map(np.float_, line.split()))
+                if len(coords) == dims[1]:
+                    steps['coords'].append(coords)
+                    coords = []
+            elif 'energies' in start:
+                energies.extend(map(np.float_, line.split()))
+                if len(energies) == dims[0]:
+                    steps['energies'].append(energies)
+                    energies = []
+            elif 'gradients' in start:
+                grads.extend(map(np.float_, line.split()))
+                if len(grads) == dims[1]:
+                    steps['gradients'].append(grads)
+                    grads = []
+
+        grads = np.reshape(np.asarray(steps['gradients']), (dims[0], dims[1]/3, 3))
+        coords = np.reshape(np.asarray(steps['coords']), (dims[0], dims[1]/3, 3))
+        energies = np.reshape(np.asarray(steps['energies']), (dims[0]))
+
+        return coords, grads, energies
+
+    def _get_orca_atom_list(self, natoms, contents):
+        start = False
+        atom_list = []
+        for line in contents:
+            if 'CARTESIAN COORDINATES (A.U.)' in line:
+                start = True
+                continue
+
+            if start:
+                match = re.search(r'\ +([0-9]+)\ +([A-Z][a-z]*)\ +([0-9]+\.[0-9]+)\ +([0-9]*)\ +([0-9]+\.[0-9]+)', line)
+                if match:
+                    num = int(match.group(1))
+                    lb = match.group(2)
+                    mass = float(match.group(5))
+                    atom_list.append((lb, mass))
+
+                    if num+1 == natoms:
+                        break
+        return atom_list
 
     def _get_energy(self, contents):
         match = re.search(r'\-[0-9]+\.[0-9]+', contents)
@@ -128,46 +343,77 @@ class AddCalculationtoDBTask(FiretaskBase):
         return FWAction()
 
 
-class ProtonateMolecule(ComputeEnergyTask):
+# class ProtonateMolecule(ComputeEnergyTask):
 
-    def protonate(m, atom, db):
-        mm = ob.OBMol(m)
-        atom.IncrementImplicitValence()
-        mm.AddHydrogens(atom)
-        print 'protonating atom', mm.GetFormula()
-        total_charge = m.GetTotalCharge()
-        m.SetTotalCharge(total_charge + 1)
-        egy = getEnergy(m, db, mongoDB)
-        if egy < protonationEnergy:
-            protonated_energy = egy
-            protonated_atom = atom.GetIdx()
-        atom_to_delete = m.getAtom(m.NumAtoms())
-        m.DeleteAtom(atom_to_delete)
-        m.SetTotalCharge(total_charge)
-        print('protonation', egy)
+#     def protonate(m, atom, db):
+#         mm = ob.OBMol(m)
+#         atom.IncrementImplicitValence()
+#         mm.AddHydrogens(atom)
+#         print 'protonating atom', mm.GetFormula()
+#         total_charge = m.GetTotalCharge()
+#         m.SetTotalCharge(total_charge + 1)
+#         egy = getEnergy(m, db, mongoDB)
+#         if egy < protonationEnergy:
+#             protonated_energy = egy
+#             protonated_atom = atom.GetIdx()
+#         atom_to_delete = m.getAtom(m.NumAtoms())
+#         m.DeleteAtom(atom_to_delete)
+#         m.SetTotalCharge(total_charge)
+#         print('protonation', egy)
 
-    def run_task(self):
-        pass
+#     def run_task(self):
+#         pass
 
 
-class DeprotonateMolecule(ComputeEnergyTask):
-    def deprotonate(m, atom, db):
-        mm = ob.OBMol(m) #     mm.DeleteAtom(atom) #     print 'deprotonating atom', mm.GetFormula()
-        mm.SetTotalCharge(m.GetTotalCharge() - 1)
+# class DeprotonateMolecule(ComputeEnergyTask):
+#     def deprotonate(m, atom, db):
+#         mm = ob.OBMol(m) #     mm.DeleteAtom(atom) #     print 'deprotonating atom', mm.GetFormula()
+#         mm.SetTotalCharge(m.GetTotalCharge() - 1)
+#         try:
+#             egy = get_energy(mm, db)
+#         except:
+#             print "failed to assign deprot energy"
+
+#         deprotonated_energy = 0
+#         if egy < deprotonated_energy:
+#             deprotonated_energy = egy
+#         for connected_atom in ob.OBAtomAtomIter(atom):
+#             deprotonated_atom = connectedAtom.GetIdx()
+#             print('deprotonation', egy)
+
+#     def run_task(self):
+#         pass
+
+
+def make_df_with_smiles_only_from_csv(csv_file, reset=False):
+    """
+    This function takes in a csv file like the ones Ben has been sending
+    around.
+    1 creates DataFrame from csv
+    2 iterate rows in DataFrame, creating an rdkit.Chem.rdchem.Mol object
+        If 'original_smiles' is available, this will be used to generate the
+        rdkit.Chem.rdchem.Mol using Chem.MolFromSmiles.
+    It will save the entire DataFrame as 'molecules.pkl' and can try to recover
+    it as well.
+    """
+    if reset:
         try:
-            egy = get_energy(mm, db)
+            remove('molecules.pkl')
         except:
-            print "failed to assign deprot energy"
+            pass
 
-        deprotonated_energy = 0
-        if egy < deprotonated_energy:
-            deprotonated_energy = egy
-        for connected_atom in ob.OBAtomAtomIter(atom):
-            deprotonated_atom = connectedAtom.GetIdx()
-            print('deprotonation', egy)
+    try:
+        df = pd.read_pickle('molecules.pkl')
+    except IOError:
+        print 'No pickle to recover'
+    else:
+        return df
 
-    def run_task(self):
-        pass
+    df = pd.read_csv(csv_file)
+
+    df.to_pickle('molecules.pkl')
+
+    return df
 
 
 def make_df_with_molecules_from_csv(csv_file, reset=False):
@@ -239,6 +485,7 @@ def make_df_with_molecules_from_csv(csv_file, reset=False):
 
     return df
 
+
 def read_molecules_from_csv(fname):
     """ given a csv file, return dict of inchikey to inchistring """
     mols = {}
@@ -248,6 +495,7 @@ def read_molecules_from_csv(fname):
             _, inchi_string, inchi_key = row[0], row[1], row[2]
             mols[inchi_key] = inchi_string
     return mols
+
 
 def read_molecules_from_csv_new(fname):
     mols = {}
@@ -259,65 +507,70 @@ def read_molecules_from_csv_new(fname):
 
     return mols
 
-def create_pybel_molecule(inchi_string, lprint=False):
-    """create an openbabel molecule from an inchistring"""
-    if lprint:
-        print 'inchi string in create mol is ', inchi_string
 
-    try:
-        molecule = pybel.readstring('inchi', inchi_string, opt={})
-    except TypeError:
-        print 'Unable to convert inchi string to pybel.Molecule'
-        quit()
-    else:
-        molecule.title = molecule.formula
-        molecule.addh()
-        molecule.make3D()
+def create_launchpad(db_config_file):
+    """use to create a FW launchpad using mongodb creds from file"""
+    config = SafeConfigParser()
+    config.read(db_config_file)
+    db = config['db']
 
-        return molecule
+    lpad = LaunchPad(
+        host=db['host'],
+        port=int(db['port']),
+        name=db['name'],
+        username=db['username'],
+        password=db['password'])
 
-def create_orca_input_string(molecule):
-    charge = Chem.GetFormalCharge(molecule)
-    nelectrons = get_n_electrons(molecule)
-    mult = (1 if (nelectrons + charge) % 2 == 0 else 2)
-    calc_details = {
-        "molecular_formula": Chem.rdMolDescriptors.CalcMolFormula(molecule),
-        "molecularSpinMultiplicity": mult,
-        "charge": charge,
-        "numberOfElectrons": nelectrons,
-        "waveFunctionTheory": "PM3"
-    }
+    return lpad
 
-    orca_string = ''
-    orca_string += '%MaxCore 6000\n'
-    orca_string += '!SlowConv\n'
-    orca_string += '!NOSOSCF\n'
-    orca_string += '!PM3 Opt \n%coords \n  CTyp xyz\n'
-    orca_string += ' Charge ' + str(charge) + '\n'
-    orca_string += ' Mult ' + str(mult) + '\n coords\n'
 
-    natoms = molecule.GetNumAtoms()
-    try:
-        conf = molecule.GetConformer()
-    except ValueError:
-        return None, None
+def create_fworker(name):
+    fworker_config = '/home/bkrull/.fireworks/' + name.lower() + '.yaml'
+    fworker = FWorker().from_file(fworker_config)
 
-    for idx in range(natoms):
-        atom = molecule.GetAtomWithIdx(idx)
-        xyz = conf.GetAtomPosition(idx)
+    return fworker
 
-        tmp = ''
-        tmp += ' ' + str(atom.GetSymbol())
-        tmp += ' ' + str(xyz.x)
-        tmp += ' ' + str(xyz.y)
-        tmp += ' ' + str(xyz.z) + ' \n'
-        orca_string += tmp
 
-    orca_string += ' end\nend\n'
-    orca_string += '%geom\n MaxIter 200\n end\n'
-    orca_string += '%scf\n MaxIter 1500\n end\n'
+def create_queue_adapater(q_type):
+    slurm_adapter = CommonAdapter(
+        q_type=q_type,
+        template_file='/home/bkrull/.fireworks/slurm.yaml',
+        reserve=True)
 
-    return orca_string, calc_details
+    return slurm_adapter
+
+
+def create_launchpad(db_config_file):
+    """use to create a FW launchpad using mongodb creds from file"""
+    config = SafeConfigParser()
+    config.read(db_config_file)
+    db = config['db']
+
+    lpad = LaunchPad(
+        host=db['host'],
+        port=int(db['port']),
+        name=db['name'],
+        username=db['username'],
+        password=db['password'])
+
+    return lpad
+
+
+def create_fworker(name):
+    fworker_config = '/home/bkrull/.fireworks/' + name.lower() + '.yaml'
+    fworker = FWorker().from_file(fworker_config)
+
+    return fworker
+
+
+def create_queue_adapater(q_type):
+    slurm_adapter = CommonAdapter(
+        q_type=q_type,
+        template_file='/home/bkrull/.fireworks/slurm.yaml',
+        reserve=True)
+
+    return slurm_adapter
+
 
 def get_n_electrons(molecule, rdkit=True):
     if rdkit:
@@ -326,9 +579,35 @@ def get_n_electrons(molecule, rdkit=True):
         elec_count = [atom.atomicnum for atom in molecule.atoms]
     return sum(elec_count)
 
-def xyzfile_to_psi4mol(fname):
-    qmol = psi4.qcdb.Molecule.init_with_xyz(fname)
-    lmol = psi4.geometry(qmol.create_psi4_string_from_molecule())
-    lmol.update_geometry()
 
-    return lmol
+def create_launchpad(db_config_file):
+    """use to create a FW launchpad using mongodb creds from file"""
+    config = SafeConfigParser()
+    config.read(db_config_file)
+    db = config['db']
+
+    lpad = LaunchPad(
+        host=db['host'],
+        port=int(db['port']),
+        name=db['name'],
+        username=db['username'],
+        password=db['password'])
+
+    return lpad
+
+
+def create_fworker(name):
+    fworker_config = '/home/bkrull/.fireworks/' + name.lower() + '.yaml'
+    fworker = FWorker().from_file(fworker_config)
+
+    return fworker
+
+
+def create_queue_adapater(q_type):
+    slurm_adapter = CommonAdapter(
+        q_type=q_type,
+        template_file='/home/bkrull/.fireworks/slurm.yaml',
+        reserve=True)
+
+    return slurm_adapter
+
