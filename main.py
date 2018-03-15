@@ -11,7 +11,6 @@ molecules in the Metatlas database.
 from fireworks import Firework
 from metatlas import OBUFFOptimize, OrcaOptimize, \
     create_launchpad, make_df_with_smiles_only_from_csv
-from tqdm import tqdm
 
 
 if __name__ == "__main__":
@@ -23,9 +22,15 @@ if __name__ == "__main__":
     metatlas_lpad.reset('2018-03-13')
     molecules = make_df_with_smiles_only_from_csv(CSV_FILE, reset=True)
 
-    for index, row in tqdm(molecules.iterrows()):
-        uff = OBUFFOptimize(smiles_string=row['original_smiles'])
+    for index, row in molecules.iterrows():
+        smiles = row['original_smiles']
+        formula = row['formula']
+
+        if type(smiles) is float:
+            continue
+
+        uff = OBUFFOptimize(smiles_string=smiles)
         pm3 = OrcaOptimize()
-        fw = Firework([uff, pm3], name=row['formula'])
+        fw = Firework([uff, pm3], name=formula)
 
         metatlas_lpad.add_wf(fw)
