@@ -11,6 +11,7 @@ molecules in the Metatlas database.
 import pandas as pd
 import re
 import pybel
+import openbabel
 import numpy as np
 from configparser import SafeConfigParser
 from rdkit import Chem
@@ -105,41 +106,6 @@ class OBUFFOptimize(FiretaskBase):
                                  'formula': formula}}]
         )
 
-    def create_orca_input_string(self, molecule):
-        charge = molecule.charge
-        nelectrons = get_n_electrons(molecule, rdkit=False)
-        mult = (1 if (nelectrons + charge) % 2 == 0 else 2)
-        calc_details = {
-            "molecular_formula": molecule.formula,
-            "molecularSpinMultiplicity": mult,
-            "charge": charge,
-            "numberOfElectrons": nelectrons,
-            "waveFunctionTheory": "PM3"
-        }
-
-        orca_string = ''
-        orca_string += '%MaxCore 6000\n'
-        orca_string += '!COPT\n'
-        orca_string += '!SlowConv\n'
-        orca_string += '!NOSOSCF\n'
-        orca_string += '!PM3 Opt \n%coords \n  CTyp xyz\n'
-        orca_string += ' Charge ' + str(charge) + '\n'
-        orca_string += ' Mult ' + str(mult) + '\n coords\n'
-
-        for atom in molecule.atoms:
-            tmp = ''
-            tmp += ' ' + str(element(atom.atomicnum).symbol)
-            tmp += ' ' + str(atom.coords[0])
-            tmp += ' ' + str(atom.coords[1])
-            tmp += ' ' + str(atom.coords[2]) + ' \n'
-            orca_string += tmp
-
-        orca_string += ' end\nend\n'
-        orca_string += '%geom\n MaxIter 200\n end\n'
-        orca_string += '%scf\n MaxIter 1500\n end\n'
-
-        return orca_string, calc_details
-
 
 class Psi4Optimize(FiretaskBase):
     _fw_name = 'Psi4Optimize'
@@ -178,45 +144,13 @@ class OrcaOptimize(FiretaskBase):
     optional_params = ['orca_string', 'formula']
     # required_params = ['input_string', 'calc_details']
 
-    def _write_string_to_orca_file(self, formula, input_string):
-        input_name = formula + '.inp'
-        with open(input_name, 'w') as f:
-            f.write(input_string)
-
-        return
-
-    def _optimize_with_orca(self, formula):
-        iter = 0
-        output = ''
-
-        try:
-            with open(formula+'.out', 'r') as f:
-                output = f.read()
-        except IOError:
-            while 'OPTIMIZATION RUN DONE' not in output and \
-                  'TERMINATED NORMALLY' not in output:
-
-                iter += 1
-                # output = check_output(['srun', 'orca',
-                #                     formula+'.inp'], stdout=f)
-
-                process = Popen(['orca', formula+'.inp'], stdout=PIPE)
-                output, err = process.communicate()
-                if iter > 4:
-                    raise ValueError, "unable to reach opt convergence"
-
-            with open(formula+'.out', 'w') as f:
-                f.write(output)
-
-        return output
-
     def run_task(self, fw_spec):
         orca_string = fw_spec['orca_string'][0][0]
         formula = fw_spec['formula'][0]
         self._write_string_to_orca_file(formula, orca_string)
 
         try:
-            output = self._optimize_with_orca(formula)
+            output = optimize_with_orca(formula)
         except ValueError:  # some kind of fault error
             # DON"T KNOW WHAT GOES HERE YET"
             # rerun_fw = Firework(ComputeEnergyTask(input_string=self['input_string'],
@@ -336,53 +270,61 @@ class ParseResults(object):
         return match.group(0)
 
 
-class AddCalculationtoDBTask(FiretaskBase):
-    required_params = ['path_to_calc_output']
+class ProtonateMolecule(OrcaOptimize):
+    _fw_name = 'ProtonateMolecule'
+    required_params = ['xyzparent']
+
+    def _single_protonations(self, pymol):
+        orca_strings = []
+
+        for atom in pymol.atoms:
+            if atom.atomicnum in [7,8,15,16]:
+                mol = create_obmol(pymol)
+                a = mol.NewAtom()
+                a.SetAtomicNum(1)
+                a.SetVector(atom.coords[0]+0.2,
+                atom.coords[1]+0.2,
+                atom.coords[2]+0.2)
+                mol.AddBond(atom.idx, pymol.atoms[-1].idx+1, 1)
+                mol.SetTotalCharge(pymol.charge+1)
+                tmp_pymol = pybel.Molecule(mol)
+                tmp_pymol.localopt()
+
+                orca_string, _ = create_orca_input_string(tmp_pymol)
+                orca_strings.append(orca_string)
+
+        return orca_strings
+
     def run_task(self, fw_spec):
-        path_to_calc_output = ' '
-        return FWAction()
 
+        print self['xyzparent']
+        pymol = pybel.readfile('xyz', self['xyzparent']).next()
 
-# class ProtonateMolecule(ComputeEnergyTask):
+        orca_strings = self._single_protonations(pymol)
 
-#     def protonate(m, atom, db):
-#         mm = ob.OBMol(m)
-#         atom.IncrementImplicitValence()
-#         mm.AddHydrogens(atom)
-#         print 'protonating atom', mm.GetFormula()
-#         total_charge = m.GetTotalCharge()
-#         m.SetTotalCharge(total_charge + 1)
-#         egy = getEnergy(m, db, mongoDB)
-#         if egy < protonationEnergy:
-#             protonated_energy = egy
-#             protonated_atom = atom.GetIdx()
-#         atom_to_delete = m.getAtom(m.NumAtoms())
-#         m.DeleteAtom(atom_to_delete)
-#         m.SetTotalCharge(total_charge)
-#         print('protonation', egy)
+        molecule_list = []
+        for inp in orca_string:
+            try:
+                write_string_to_orca_file(pymol.formula+'.inp', orca_string)
+                output = optimize_with_orca(pymol.formula)
+            except ValueError:  # some kind of fault error
+                # DON"T KNOW WHAT GOES HERE YET"
+                continue
 
-#     def run_task(self):
-#         pass
+            try:
+                Results = ParseResults(pymol.formula)
+            except IOError:
+                continue
 
+            molecule_list.append(Results)
 
-# class DeprotonateMolecule(ComputeEnergyTask):
-#     def deprotonate(m, atom, db):
-#         mm = ob.OBMol(m) #     mm.DeleteAtom(atom) #     print 'deprotonating atom', mm.GetFormula()
-#         mm.SetTotalCharge(m.GetTotalCharge() - 1)
-#         try:
-#             egy = get_energy(mm, db)
-#         except:
-#             print "failed to assign deprot energy"
-
-#         deprotonated_energy = 0
-#         if egy < deprotonated_energy:
-#             deprotonated_energy = egy
-#         for connected_atom in ob.OBAtomAtomIter(atom):
-#             deprotonated_atom = connectedAtom.GetIdx()
-#             print('deprotonation', egy)
-
-#     def run_task(self):
-#         pass
+        return FWAction(
+            stored_data={
+                'coords': [r.coords for r in molecule_list],
+                'grads': [r.grads for r in molecule_list],
+                'energies': [r.energies for r in molecule_list],
+                'atom_list': [r.atom_list for r in molecule_list]
+            })
 
 
 def make_df_with_smiles_only_from_csv(csv_file, reset=False):
@@ -610,4 +552,84 @@ def create_queue_adapater(q_type):
         reserve=True)
 
     return slurm_adapter
+
+
+def create_orca_input_string(molecule):
+    charge = molecule.charge
+    nelectrons = get_n_electrons(molecule, rdkit=False)
+    mult = (1 if (nelectrons + charge) % 2 == 0 else 2)
+    calc_details = {
+        "molecular_formula": molecule.formula,
+        "molecularSpinMultiplicity": mult,
+        "charge": charge,
+        "numberOfElectrons": nelectrons,
+        "waveFunctionTheory": "PM3"
+    }
+
+    orca_string = ''
+    orca_string += '%MaxCore 6000\n'
+    orca_string += '!COPT\n'
+    orca_string += '!SlowConv\n'
+    orca_string += '!NOSOSCF\n'
+    orca_string += '!PM3 Opt \n%coords \n  CTyp xyz\n'
+    orca_string += ' Charge ' + str(charge) + '\n'
+    orca_string += ' Mult ' + str(mult) + '\n coords\n'
+
+    for atom in molecule.atoms:
+        tmp = ''
+        tmp += ' ' + str(element(atom.atomicnum).symbol)
+        tmp += ' ' + str(atom.coords[0])
+        tmp += ' ' + str(atom.coords[1])
+        tmp += ' ' + str(atom.coords[2]) + ' \n'
+        orca_string += tmp
+
+    orca_string += ' end\nend\n'
+    orca_string += '%geom\n MaxIter 200\n end\n'
+    orca_string += '%scf\n MaxIter 1500\n end\n'
+
+    return orca_string, calc_details
+
+
+def create_obmol(pymol):
+    mol = openbabel.OBMol()
+
+    for atom in pymol.atoms:
+        a = mol.NewAtom()
+        a.SetAtomicNum(atom.atomicnum)
+        a.SetVector(atom.coords[0], atom.coords[1], atom.coords[2])
+
+    return mol
+
+
+def optimize_with_orca(formula):
+    iter = 0
+    output = ''
+
+    try:
+        with open(formula+'.out', 'r') as f:
+            output = f.read()
+    except IOError:
+        while 'OPTIMIZATION RUN DONE' not in output and \
+                'TERMINATED NORMALLY' not in output:
+
+            iter += 1
+            # process = Popen(['srun', 'orca', formula+'.inp'], stdout=f)
+
+            process = Popen(['orca', formula+'.inp'], stdout=PIPE)
+            output, err = process.communicate()
+            if iter > 4:
+                raise ValueError, "unable to reach opt convergence"
+
+        with open(formula+'.out', 'w') as f:
+            f.write(output)
+
+    return output
+
+
+def write_string_to_orca_file(formula, input_string):
+    input_name = formula + '.inp'
+    with open(input_name, 'w') as f:
+        f.write(input_string)
+
+    return
 
