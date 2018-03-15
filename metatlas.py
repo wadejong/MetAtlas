@@ -8,11 +8,12 @@ molecules in the Metatlas database.
 | Input   |    | Calc   |    | File    |
 -----------    ----------    -----------
 """
-import pandas as pd
 import re
 import pybel
 import openbabel
+import psi4
 import numpy as np
+import pandas as pd
 from configparser import SafeConfigParser
 from rdkit import Chem
 from rdkit.Chem import AllChem
@@ -20,7 +21,6 @@ from os import remove
 from mendeleev import element
 from subprocess import Popen, PIPE
 from fireworks import Firework, LaunchPad, FiretaskBase, FWAction
-import psi4
 
 try:
     termtype = get_ipython().__class__.__name__
@@ -298,14 +298,14 @@ class ProtonateMolecule(OrcaOptimize):
     def run_task(self, fw_spec):
 
         print self['xyzparent']
-        pymol = pybel.readfile('xyz', self['xyzparent']).next()
+        pymol = pybel.readfile('xyz', str(self['xyzparent'])).next()
 
         orca_strings = self._single_protonations(pymol)
 
         molecule_list = []
-        for inp in orca_string:
+        for inp in orca_strings:
             try:
-                write_string_to_orca_file(pymol.formula+'.inp', orca_string)
+                write_string_to_orca_file(pymol.formula, inp)
                 output = optimize_with_orca(pymol.formula)
             except ValueError:  # some kind of fault error
                 # DON"T KNOW WHAT GOES HERE YET"
