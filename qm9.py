@@ -9,25 +9,39 @@ molecules in the Metatlas database.
 -----------    ----------    -----------
 """
 import pybel
+import sys
+from multiprocessing import Pool
 from glob import glob
-from fireworks import Firework
+from fireworks import Firework, FWorker
+from fireworks.core.rocket_launcher import rapidfire
 from metatlas import ProtonateMolecule, create_launchpad
 
 
-if __name__ == "__main__":
-    METATLAS_DB_CONFIG = '/home/bkrull/.fireworks/local_db.ini'
-    QM9_DATA_HOME = '/home/bkrull/Documents/data/qm9'
-    PROJECT_HOME = 'scr/'
+def multirapid(nthreads):
+    pool = Pool(processes=nthreads)
+    pool.map(rapid, range(nthreads))
 
-    lpad = create_launchpad(METATLAS_DB_CONFIG)
-    lpad.reset('2018-03-14')
+def rapid(dummy):
+    lpad = create_launchpad(LOCAL_DB_CONFIG)
+    rapidfire(lpad, FWorker(), nlaunches=25000)
 
-    i=0
+def add_fws(reset=False):
+    if reset:
+        lpad.reset('', require_password=False)
+    lpad = create_launchpad(LOCAL_DB_CONFIG)
+
     for fname in glob(QM9_DATA_HOME+'/*'):
         pm3 = Firework(ProtonateMolecule(xyzparent=fname),
                        name=fname.split('.')[0])
 
         lpad.add_wf(pm3)
-        i+=1
+    return
 
-        if i>20:break
+
+if __name__ == "__main__":
+    LOCAL_DB_CONFIG = '/home/bkrull/.fireworks/local_db.ini'
+    QM9_DATA_HOME = '/home/bkrull/Documents/data/qm9'
+    PROJECT_HOME = 'scr/'
+
+    nthreads = int(sys.argv[1])
+    multirapid(nthreads)
