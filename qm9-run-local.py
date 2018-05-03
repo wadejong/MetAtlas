@@ -37,6 +37,25 @@ def add_fws(reset=False):
         lpad.add_wf(pm3)
     return
 
+def add_neutral_fws(reset=False):
+    if reset:
+        lpad.reset('', require_password=False)
+    lpad = create_launchpad(LOCAL_DB_CONFIG)
+
+    for fname in glob(QM9_DATA_HOME+'/*'):
+        smiles = row['original_smiles']
+        formula = row['formula']
+
+        if type(smiles) is float:
+            continue
+
+        uff = OBUFFOptimize(smiles_string=smiles)
+        pm3 = OrcaOptimize()
+        fw = Firework([uff, pm3], name=formula)
+
+        lpad.add_wf(fw)
+    return
+
 
 if __name__ == "__main__":
     LOCAL_DB_CONFIG = '/home/bkrull/.fireworks/local_db.ini'

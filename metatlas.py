@@ -59,52 +59,58 @@ class RDKitUFFOptimize(FiretaskBase):
 
         return FWAction(
             stored_data={'uff_optimized_mol': mol},
-            mod_spec=[{'_push': {'input_mol': mol}}]
-        )
+            mod_spec=[{
+                '_push': {
+                    'input_mol': mol
+                }
+            }])
 
 
 class OBUFFOptimize(FiretaskBase):
     _fw_name = 'OBUFFOptimize'
     required_params = ['smiles_string']
 
-    @staticmethod
-    def _create_pybel_molecule(smiles_string, lprint=False):
-        """create an openbabel molecule from an inchistring"""
-        smiles = str(smiles_string)
-        try:
-            molecule = pybel.readstring('smi', smiles, opt={})
-        except TypeError:
-            print type(smiles_string)
-            print 'Unable to convert smiles string {} to pybel.Molecule'.format(smiles_string)
-            raise
-        else:
-            molecule.title = molecule.formula
-            molecule.addh()
-
-            return molecule
-
     def run_task(self, fw_spec):
-        smiles = self['smiles_string']
+        mol_string = self['smiles_string']
 
-        obmol = self._create_pybel_molecule(smiles)
-        try:
+        if 'strtype' in self.to_dict():
+            strtype = self['strtype']
+        else:
+            strtype = 'smi'
+
+        obmol = create_pybel_molecule(mol_string, strtype)
+
+        if strtype != 'xyz':
             obmol.make3D()
             obmol.localopt()
-        except:
-            pass
+            xyzfile = '{}-uff.xyz'.format(obmol.formula)
+            obmol.write('xyz', filename=xyzfile, overwrite=True)
 
-        xyzfile = '{}-uff.xyz'.format(obmol.formula)
-        obmol.write('xyz', filename=xyzfile, overwrite=True)
-
-        orca_string = self.create_orca_input_string(obmol)
+        orca_string = create_orca_input_string(obmol)
         formula = obmol.formula
 
         return FWAction(
             stored_data={'mol': obmol,
                          'moltype': 'openbabel'},
-            mod_spec=[{'_push': {'orca_string': orca_string,
-                                 'formula': formula}}]
-        )
+            mod_spec=[{
+                '_push': {
+                    'orca_string': orca_string,
+                    'formula': formula
+                }
+            }])
+
+
+class ComputeProtonationEnergy(FiretaskBase):
+    _fw_name = 'ComputeProtonationEnergy'
+    required_params = ['neutral_mol_energy', 'protonated_mol_energies']
+
+    def run_task(self, fw_spec):
+        neutral = self['neutral_mol_energy']
+        prot = self['protonated_mol_energies']
+
+        protonation_energies = [e-neutral for e in prot]
+
+        return FWAction(stored_data={'protonation_energies': protonation_energies})
 
 
 class Psi4Optimize(FiretaskBase):
@@ -134,20 +140,19 @@ class Psi4Optimize(FiretaskBase):
         psi4mol = self._xyzfile_to_psi4mol(xyzfile)
         output = self._optimize_with_psi4(psi4mol)
 
-        return FWAction(
-            stored_data={'optcoords': output}
-        )
+        return FWAction(stored_data={'optcoords': output})
 
 
 class OrcaOptimize(FiretaskBase):
     _fw_name = 'OrcaOptimize'
     optional_params = ['orca_string', 'formula']
+
     # required_params = ['input_string', 'calc_details']
 
     def run_task(self, fw_spec):
         orca_string = fw_spec['orca_string'][0][0]
         formula = fw_spec['formula'][0]
-        self._write_string_to_orca_file(formula, orca_string)
+        write_string_to_orca_file(formula, orca_string)
 
         try:
             output = optimize_with_orca(formula)
@@ -165,31 +170,32 @@ class OrcaOptimize(FiretaskBase):
         except IOError:
             raise
 
-        return FWAction(
-            stored_data={
-                'coords': Results.coords,
-                'grads': Results.grads,
-                'energies': Results.energies,
-                'atom_list': Results.atom_list
-            })
+        return FWAction(stored_data={
+            'coords': Results.coords,
+            'grads': Results.grads,
+            'energies': Results.energies,
+            'atom_list': Results.atom_list
+        })
 
 
 class ParseResults(object):
+
     def __init__(self, formula):
         try:
-            with open(formula+'.opt') as f:
+            with open(formula + '.opt') as f:
                 contents = f.readlines()
         except IOError:
             raise IOError, 'no output file to parse'
-        self.coords, self.grads, self.energies = self._parse_orca_opt_file(contents)
+        self.coords, self.grads, self.energies = self._parse_orca_opt_file(
+            contents)
 
         try:
-            with open(formula+'.out') as f:
+            with open(formula + '.out') as f:
                 contents = f.readlines()
         except IOError:
             raise IOError, 'no output file to parse'
 
-        natoms = len(self.coords[1,:,1])
+        natoms = len(self.coords[1, :, 1])
         self.atom_list = self._get_orca_atom_list(natoms, contents)
 
     def _parse_orca_opt_file(self, contents):
@@ -239,8 +245,10 @@ class ParseResults(object):
                     steps['gradients'].append(grads)
                     grads = []
 
-        grads = np.reshape(np.asarray(steps['gradients']), (dims[0], dims[1]/3, 3))
-        coords = np.reshape(np.asarray(steps['coords']), (dims[0], dims[1]/3, 3))
+        grads = np.reshape(
+            np.asarray(steps['gradients']), (dims[0], dims[1] / 3, 3))
+        coords = np.reshape(
+            np.asarray(steps['coords']), (dims[0], dims[1] / 3, 3))
         energies = np.reshape(np.asarray(steps['energies']), (dims[0]))
 
         return coords, grads, energies
@@ -254,14 +262,16 @@ class ParseResults(object):
                 continue
 
             if start:
-                match = re.search(r'\ +([0-9]+)\ +([A-Z][a-z]*)\ +([0-9]+\.[0-9]+)\ +([0-9]*)\ +([0-9]+\.[0-9]+)', line)
+                match = re.search(
+                    r'\ +([0-9]+)\ +([A-Z][a-z]*)\ +([0-9]+\.[0-9]+)\ +([0-9]*)\ +([0-9]+\.[0-9]+)',
+                    line)
                 if match:
                     num = int(match.group(1))
                     lb = match.group(2)
                     mass = float(match.group(5))
                     atom_list.append((lb, mass))
 
-                    if num+1 == natoms:
+                    if num + 1 == natoms:
                         break
         return atom_list
 
@@ -276,19 +286,31 @@ class ProtonateMolecule(OrcaOptimize):
 
     def _single_protonations(self, pymol):
         orca_strings = []
+        mols = []
 
-        for atom in pymol.atoms:
-            if atom.atomicnum in [7,8,15,16]:
-                mol = create_obmol(pymol)
-                a = mol.NewAtom()
+        for atom in mol.atoms:
+            if atom.atomicnum in [7, 8, 15, 16]:
+                print 'Atom #{} is {} atom with\n coords {}'.format(atom.idx,
+                                                                    element(atom.atomicnum),
+                                                                    atom.coords)
+                obmol = create_obmol(mol)
+                a = obmol.NewAtom()
                 a.SetAtomicNum(1)
-                a.SetVector(atom.coords[0]+0.2,
-                atom.coords[1]+0.2,
-                atom.coords[2]+0.2)
-                mol.AddBond(atom.idx, pymol.atoms[-1].idx+1, 1)
-                mol.SetTotalCharge(pymol.charge+1)
-                tmp_pymol = pybel.Molecule(mol)
+                a.SetVector(*atom.coords)
+                a.SetVector(a.GetVector().GetX() + 0.2,
+                            a.GetVector().GetY() + 0.2,
+                            a.GetVector().GetZ() + 0.2)
+                print 'New Proton is #{} with info {} and\n coords ({}, {}. {})'.format(a.GetIdx(),
+                                                                      element(a.GetAtomicNum()),
+                                                                      a.GetVector().GetX(),
+                                                                      a.GetVector().GetY(),
+                                                                      a.GetVector().GetZ())
+                obmol.AddBond(atom.idx, a.GetIdx(), 1)
+                obmol.SetTotalCharge(mol.charge + 1)
+                tmp_pymol = pybel.Molecule(obmol)
                 tmp_pymol.localopt()
+
+                mols.append(tmp_pymol)
 
                 orca_string, _ = create_orca_input_string(tmp_pymol)
                 orca_strings.append(orca_string)
@@ -318,13 +340,12 @@ class ProtonateMolecule(OrcaOptimize):
 
             molecule_list.append(Results)
 
-        return FWAction(
-            stored_data={
-                'coords': [r.coords for r in molecule_list],
-                'grads': [r.grads for r in molecule_list],
-                'energies': [r.energies for r in molecule_list],
-                'atom_list': [r.atom_list for r in molecule_list]
-            })
+        return FWAction(stored_data={
+            'coords': [r.coords for r in molecule_list],
+            'grads': [r.grads for r in molecule_list],
+            'energies': [r.energies for r in molecule_list],
+            'atom_list': [r.atom_list for r in molecule_list]
+        })
 
 
 def make_df_with_smiles_only_from_csv(csv_file, reset=False):
@@ -388,7 +409,8 @@ def make_df_with_molecules_from_csv(csv_file, reset=False):
     key_used = []
     for index, row in tqdm(df.iterrows(), total=len(df)):
         mol = None
-        for key in ['sanitized_smiles', 'original_smiles']:#, 'sanitized_inchikey']:
+        for key in ['sanitized_smiles', 'original_smiles'
+                   ]:  #, 'sanitized_inchikey']:
             mol_string = row[key]
             try:
                 mol = Chem.MolFromSmiles(mol_string)
@@ -601,12 +623,41 @@ def create_obmol(pymol):
     return mol
 
 
+def create_pybel_molecule(mol_string, strtype='xyz', lprint=False):
+    """create an openbabel molecule from an inchistring"""
+    if strtype == 'smi':
+        smiles = str(mol_string)
+        try:
+            molecule = pybel.readstring('smi', smiles, opt={})
+        except TypeError:
+            print type(smiles)
+            print 'Unable to convert smiles string {} to pybel.Molecule'.format(
+                smiles)
+            raise
+        else:
+            molecule.title = molecule.formula
+            molecule.addh()
+    elif strtype == 'xyz' or strtype == '':
+        xyzfile = str(mol_string)
+        try:
+            molecule = pybel.readfile('xyz', xyzfile).next()
+        except TypeError or IOError:
+            print type(xyzfile)
+            print 'Unable to get xyzfile {} to pybel.Molecule'.format(
+                xyzfile)
+            raise
+    else:
+        raise ValueError, 'unable to get molecule'
+
+    return molecule
+
+
 def optimize_with_orca(formula):
     iter = 0
     output = ''
 
     try:
-        with open(formula+'.out', 'r') as f:
+        with open(formula + '.out', 'r') as f:
             output = f.read()
     except IOError:
         while 'OPTIMIZATION RUN DONE' not in output and \
@@ -615,12 +666,12 @@ def optimize_with_orca(formula):
             iter += 1
             # process = Popen(['srun', 'orca', formula+'.inp'], stdout=f)
 
-            process = Popen(['orca', formula+'.inp'], stdout=PIPE)
+            process = Popen(['orca', formula + '.inp'], stdout=PIPE)
             output, err = process.communicate()
             if iter > 4:
                 raise ValueError, "unable to reach opt convergence"
 
-        with open(formula+'.out', 'w') as f:
+        with open(formula + '.out', 'w') as f:
             f.write(output)
 
     return output
@@ -632,4 +683,3 @@ def write_string_to_orca_file(formula, input_string):
         f.write(input_string)
 
     return
-
