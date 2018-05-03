@@ -19,3 +19,9 @@ orca*
 /molecules.pkl
 stdout.*K
 stdout.*
+
+launch*
+tmp*
+/.pytest_cache/v/cache/lastfailed
+.pytest_cache
+*.xyz
