@@ -1,0 +1,5 @@
+host: oodako
+port: 27017
+name: fireworks
+username: bkrull
+password: admin
