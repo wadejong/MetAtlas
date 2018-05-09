@@ -26,3 +26,5 @@ tmp*
 .pytest_cache
 *.xyz
 .ipynb_checkpoints
+*.yaml
+*.ini
