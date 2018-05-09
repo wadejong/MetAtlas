@@ -10,14 +10,16 @@ molecules in the Metatlas database.
 """
 import pybel
 import sys
+import numpy as np
 from multiprocessing import Pool
 from glob import glob
 from fireworks import Firework, FWorker
 from fireworks.core.rocket_launcher import rapidfire
+from fireworks.core.launchpad import LockedWorkflowError
 from metatlas import ProtonateMolecule, create_launchpad
 
 
-def multirapid(nthreads):
+def multirapidfire(nthreads):
     pool = Pool(processes=nthreads)
     pool.map(rapid, range(nthreads))
 
@@ -56,11 +58,39 @@ def add_neutral_fws(reset=False):
         lpad.add_wf(fw)
     return
 
+def multi_update(nthreads):
+    batch_ids = map(int, np.linspace(0, len(completed_ids), nthreads))
+
+    batches = [completed_ids[batch_ids[i]:batch_ids[i+1]]
+               for i, _ in enumerate(batch_ids[:-1])]
+
+    pool = Pool(processes=nthreads)
+    pool.map(rapid_update, batches)
+
+def rapid_update(batch):
+    lpad = create_launchpad(LOCAL_DB_CONFIG)
+    for fw_id in batch:
+        try:
+            lpad.mark_fizzled(fw_id)
+            lpad.rerun_fw(fw_id, recover_mode='prev_dir')
+
+            fwdict = lpad.get_fw_dict_by_id(fw_id)
+            parent_xyz = str(fwdict['name']+'.xyz')
+            mol = pybel.readfile('xyz', parent_xyz).next()
+
+            lpad.update_spec([fw_id], {'_tasks.0._fw_name': 'ProtonateMolecule',
+                                    '_tasks.0.xyzparent': parent_xyz})
+        except LockedWorkflowError:
+            continue
 
 if __name__ == "__main__":
-    LOCAL_DB_CONFIG = '/home/bkrull/.fireworks/local_db.ini'
+    LOCAL_DB_CONFIG = '/home/bkrull/.fireworks/qm9_local.ini'
     QM9_DATA_HOME = '/home/bkrull/Documents/data/qm9'
     PROJECT_HOME = 'scr/'
 
+    # lpad = create_launchpad(LOCAL_DB_CONFIG)
+    # completed_ids = lpad.get_fw_ids({'state': 'FIZZLED'})
+
     nthreads = int(sys.argv[1])
-    multirapid(nthreads)
+    # multi_update(nthreads)
+    multirapidfire(nthreads)

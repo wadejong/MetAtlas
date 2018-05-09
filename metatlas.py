@@ -100,19 +100,6 @@ class OBUFFOptimize(FiretaskBase):
             }])
 
 
-class ComputeProtonationEnergy(FiretaskBase):
-    _fw_name = 'ComputeProtonationEnergy'
-    required_params = ['neutral_mol_energy', 'protonated_mol_energies']
-
-    def run_task(self, fw_spec):
-        neutral = self['neutral_mol_energy']
-        prot = self['protonated_mol_energies']
-
-        protonation_energies = [e-neutral for e in prot]
-
-        return FWAction(stored_data={'protonation_energies': protonation_energies})
-
-
 class Psi4Optimize(FiretaskBase):
     _fw_name = 'Psi4Optimize'
     required_params = ['xyzfile']
@@ -230,7 +217,7 @@ class ParseResults(object):
                 break
 
             if 'coords' in start:
-                coords.extend(map(np.float_, line.split()))
+                coords.extend(map(lambda x: np.float_(x)*0.529177249, line.split()))
                 if len(coords) == dims[1]:
                     steps['coords'].append(coords)
                     coords = []
@@ -240,7 +227,7 @@ class ParseResults(object):
                     steps['energies'].append(energies)
                     energies = []
             elif 'gradients' in start:
-                grads.extend(map(np.float_, line.split()))
+                grads.extend(map(lambda x: np.float_(x)*0.529177249, line.split()))
                 if len(grads) == dims[1]:
                     steps['gradients'].append(grads)
                     grads = []
@@ -280,72 +267,163 @@ class ParseResults(object):
         return match.group(0)
 
 
-class ProtonateMolecule(OrcaOptimize):
+class ComputeProtonationEnergy(FiretaskBase):
+    _fw_name = 'ComputeProtonationEnergy'
+
+    def run_task(self, fw_spec):
+        return FWAction()
+
+
+class ProtonateMolecule(FiretaskBase):
     _fw_name = 'ProtonateMolecule'
     required_params = ['xyzparent']
+    stored_data = {}
 
-    def _single_protonations(self, pymol):
+    def _generate_parent(self, pymol):
+        orca_string, _ = create_orca_input_string(pymol)
+        write_string_to_orca_file(pymol.formula, orca_string)
+
+        try:
+            output = optimize_with_orca(pymol.formula)
+        except ValueError:  # some kind of fault error
+            # DON"T KNOW WHAT GOES HERE YET"
+            # rerun_fw = Firework(ComputeEnergyTask(input_string=self['input_string'],
+            #                                         calc_details=self['calc_details']),
+            #                     name=formula)
+            # return FWAction(detours=rerun_fw)
+            pass
+
+            # Parse results needs a new format to better store more info
+        try:
+            results = ParseResults(pymol.formula)
+        except IOError:
+            raise
+
+        self.stored_data['parent'] = {
+            'coords': results.coords,
+            'atom_list': results.atom_list,
+            'energies': results.energies,
+            'grads': results.grads,
+            'optimized_structure': results.coords[-1],
+            'optimized_energy': results.energies[-1],
+            'num_fragments': get_number_fragments(results.coords[-1],
+                                                  symbols=results.atom_list)
+        }
+        return results
+
+    def _single_protonation_orca_strings(self, pymol):
         orca_strings = []
-        mols = []
 
-        for atom in mol.atoms:
+        self.stored_data['protonated_children'] = []
+        for atom in pymol.atoms:
             if atom.atomicnum in [7, 8, 15, 16]:
                 print 'Atom #{} is {} atom with\n coords {}'.format(atom.idx,
                                                                     element(atom.atomicnum),
                                                                     atom.coords)
-                obmol = create_obmol(mol)
-                a = obmol.NewAtom()
-                a.SetAtomicNum(1)
-                a.SetVector(*atom.coords)
-                a.SetVector(a.GetVector().GetX() + 0.2,
-                            a.GetVector().GetY() + 0.2,
-                            a.GetVector().GetZ() + 0.2)
-                print 'New Proton is #{} with info {} and\n coords ({}, {}. {})'.format(a.GetIdx(),
-                                                                      element(a.GetAtomicNum()),
-                                                                      a.GetVector().GetX(),
-                                                                      a.GetVector().GetY(),
-                                                                      a.GetVector().GetZ())
-                obmol.AddBond(atom.idx, a.GetIdx(), 1)
-                obmol.SetTotalCharge(mol.charge + 1)
+                child = {}
+                child['atom_index'] = atom.idx
+                child['element'] = element(atom.atomicnum).symbol
+
+                if atom.hyb > 2:
+                    child['likely_to_break'] = True
+                else:
+                    child['likely_to_break'] = False
+                obmol = pymol.OBMol
+
+                h = openbabel.OBAtom()
+                h.SetAtomicNum(1)
+                h.SetVector(*atom.coords)
+                h.SetVector(h.GetVector().GetX() + 0.4,
+                            h.GetVector().GetY() + 0.4,
+                            h.GetVector().GetZ() + 0.4)
+                print 'New Proton is #{} with info {} and\n coords ({}, {}. {})'.format(
+                    h.GetIdx(),
+                    element(h.GetAtomicNum()),
+                    h.GetVector().GetX(),
+                    h.GetVector().GetY(),
+                    h.GetVector().GetZ()
+                )
+                obmol.InsertAtom(h)
+                obmol.AddBond(atom.idx, h.GetIdx(), 1)
+                obmol.SetTotalCharge(pymol.charge + 1)
                 tmp_pymol = pybel.Molecule(obmol)
                 tmp_pymol.localopt()
 
-                mols.append(tmp_pymol)
-
                 orca_string, _ = create_orca_input_string(tmp_pymol)
+                child['orca_string'] = orca_string
                 orca_strings.append(orca_string)
+                self.stored_data['protonated_children'].append(child)
 
         return orca_strings
 
     def run_task(self, fw_spec):
-
-        print self['xyzparent']
         pymol = pybel.readfile('xyz', str(self['xyzparent'])).next()
 
-        orca_strings = self._single_protonations(pymol)
+        parent_results = self._generate_parent(pymol)
 
-        molecule_list = []
-        for inp in orca_strings:
+        orca_strings = self._single_protonation_orca_strings(pymol)
+
+        for i, inp in enumerate(orca_strings):
             try:
-                write_string_to_orca_file(pymol.formula, inp)
-                output = optimize_with_orca(pymol.formula)
+                write_string_to_orca_file(pymol.formula+'-{}'.format(i), inp)
+                output = optimize_with_orca(pymol.formula+'-{}'.format(i))
             except ValueError:  # some kind of fault error
                 # DON"T KNOW WHAT GOES HERE YET"
                 continue
 
             try:
-                Results = ParseResults(pymol.formula)
+                results = ParseResults(pymol.formula+'-{}'.format(i))
             except IOError:
                 continue
 
-            molecule_list.append(Results)
+            self.stored_data['protonated_children'][i]['coords'] = results.coords
+            self.stored_data['protonated_children'][i]['optimized_structure'] = results.coords[-1]
+            self.stored_data['protonated_children'][i]['atom_list'] = results.atom_list
+            self.stored_data['protonated_children'][i]['energies'] = results.energies
+            self.stored_data['protonated_children'][i]['optimized_energy'] = results.energies[-1]
+            self.stored_data['protonated_children'][i]['grads'] = results.grads
+            self.stored_data['protonated_children'][i]['num_fragments'] = get_number_fragments(results.coords[-1],
+                                                                                               symbols=results.atom_list)
+            self.stored_data['protonated_children'][i]['protonation_energy'] = results.energies[-1] - \
+                    self.stored_data['parent']['optimized_energy']
 
-        return FWAction(stored_data={
-            'coords': [r.coords for r in molecule_list],
-            'grads': [r.grads for r in molecule_list],
-            'energies': [r.energies for r in molecule_list],
-            'atom_list': [r.atom_list for r in molecule_list]
-        })
+            atoms = results.atom_list
+            with open(pymol.formula+'-{}.xyz'.format(i), 'w') as f:
+                for step in range(len(results.coords)):
+                    coord = results.coords[step]
+                    energy = results.energies[step]
+                    xyz = make_xyz_from_stored_data(atoms, coord, energy)
+                    f.write(xyz)
+
+        return FWAction(stored_data=self.stored_data)
+
+
+def get_number_fragments(xyz, symbols=[], cutoff_factor=1.8, eps=1e-14):
+    cutoff_matrix = {
+            'H': { 'H': 0.90, 'C': 1.10, 'O': 1.00, 'N': 1.00, 'S': 1.33 },
+            'C': { 'H': 1.10, 'C': 1.50, 'O': 1.15, 'N': 1.50, 'S': 1.80 },
+            'O': { 'H': 1.00, 'C': 1.15, 'O': 1.20, 'N': 1.40, 'S': 1.50 },
+            'N': { 'H': 1.00, 'C': 1.50, 'O': 1.40, 'N': 1.50, 'S': 1.70 },
+            'S': { 'H': 1.33, 'C': 1.80, 'O': 1.50, 'N': 1.70, 'S': 2.05 }
+    }
+    n = xyz.shape[0]
+    A = np.zeros((n, n))
+    R = np.zeros((n, n))
+    for i in range(n):
+        for j in range(i+1, n):
+            dr = np.linalg.norm(xyz[i] - xyz[j])
+            rc = cutoff_factor * cutoff_matrix[symbols[i][0]][symbols[j][0]]
+            if dr < rc:
+                a = (1 - dr / rc)**3
+            else:
+                a = 0
+            R[i,j] = R[j,i] = dr
+            A[i, j] = A[j, i] = a
+
+    L = np.diag(A.sum(axis=0)) - A
+    ev = np.linalg.eigvalsh(L)
+
+    return np.count_nonzero(ev < ev.max() * eps)
 
 
 def make_df_with_smiles_only_from_csv(csv_file, reset=False):
@@ -683,3 +761,25 @@ def write_string_to_orca_file(formula, input_string):
         f.write(input_string)
 
     return
+
+
+def make_xyz_from_stored_data(atoms, coords, energy=[]):
+    xyz = '{}\n#{}\n'.format(len(atoms), energy)
+
+    for i, atom in enumerate(atoms):
+        xyz += '{} {} {} {}\n'.format(atom[0],
+                                      coords[i][0], coords[i][1], coords[i][2])
+
+    xyz += '\n'
+    return xyz
+
+
+def make_grad_from_stored_data(atoms, grads):
+    grad_string = '{}\n\n'.format(len(atoms))
+
+    for i, atom in enumerate(atoms):
+        grad_string += '{} {} {} {}\n'.format(atom[0],
+                                              grads[i][0], grads[i][1], grads[i][2])
+
+    grad_string += '\n'
+    return grad_string

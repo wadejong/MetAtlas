@@ -25,3 +25,4 @@ tmp*
 /.pytest_cache/v/cache/lastfailed
 .pytest_cache
 *.xyz
+.ipynb_checkpoints
