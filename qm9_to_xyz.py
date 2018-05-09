@@ -1,25 +1,5 @@
 import os
-from metatlas import create_launchpad
-
-def make_xyz_from_stored_data(atoms, coords, energy):
-    xyz = '{}\n#{}\n'.format(len(atoms), energy)
-
-    for i, atom in enumerate(atoms):
-        xyz += '{} {} {} {}\n'.format(atom[0],
-                                      coords[i][0], coords[i][1], coords[i][2])
-
-    xyz += '\n'
-    return xyz
-
-def make_grad_from_stored_data(atoms, grads):
-    grad_string = '{}\n\n'.format(len(atoms))
-
-    for i, atom in enumerate(atoms):
-        grad_string += '{} {} {} {}\n'.format(atom[0],
-                                              grads[i][0], grads[i][1], grads[i][2])
-
-    grad_string += '\n'
-    return grad_string
+from metatlas import create_launchpad, make_xyz_from_stored_data, make_grad_from_stored_data
 
 
 if __name__ == '__main__':
