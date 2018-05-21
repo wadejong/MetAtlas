@@ -1,0 +1,3 @@
+[submodule "malt"]
+	path = malt
+	url = https://tangshan.cosx-isinx.org/gitlab/tang/malt.git
