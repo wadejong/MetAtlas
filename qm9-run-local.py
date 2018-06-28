@@ -11,8 +11,10 @@ molecules in the Metatlas database.
 import pybel
 import sys
 import numpy as np
-from multiprocessing import Pool
+
 from glob import glob
+from tqdm import tqdm
+from multiprocessing import Pool
 from fireworks import Firework, FWorker
 from fireworks.core.rocket_launcher import rapidfire
 from fireworks.core.launchpad import LockedWorkflowError
@@ -25,14 +27,14 @@ def multirapidfire(nthreads):
 
 def rapid(dummy):
     lpad = create_launchpad(LOCAL_DB_CONFIG)
-    rapidfire(lpad, FWorker(), nlaunches=25000)
+    rapidfire(lpad, FWorker(), nlaunches=28000)
 
-def add_fws(reset=False):
-    if reset:
-        lpad.reset('', require_password=False)
-    lpad = create_launchpad(LOCAL_DB_CONFIG)
+def multi_add_fws(nthreads, reset=False):
+    pool = Pool(processes=nthreads)
+    pool.map(add_fws, range(nthreads))
 
-    for fname in glob(QM9_DATA_HOME+'/*'):
+def add_fws():
+    for fname in tqdm(glob(QM9_DATA_HOME+'/*')):
         pm3 = Firework(ProtonateMolecule(xyzparent=fname),
                        name=fname.split('.')[0])
 
@@ -88,9 +90,5 @@ if __name__ == "__main__":
     QM9_DATA_HOME = '/home/bkrull/Documents/data/qm9'
     PROJECT_HOME = 'scr/'
 
-    # lpad = create_launchpad(LOCAL_DB_CONFIG)
-    # completed_ids = lpad.get_fw_ids({'state': 'FIZZLED'})
-
     nthreads = int(sys.argv[1])
-    # multi_update(nthreads)
     multirapidfire(nthreads)
