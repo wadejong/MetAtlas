@@ -7,7 +7,6 @@ scr/*prop
 scr/*trj
 scr/*xyz
 scr/*.engrad
-data
 inp
 xyz
 TAGS
@@ -26,5 +25,3 @@ tmp*
 .pytest_cache
 *.xyz
 .ipynb_checkpoints
-*.yaml
-*.ini
