@@ -17,8 +17,10 @@
        experimental spectra.
 
 # Getting started
-It's a tad non-trivial to get this whole thing setup
-TODO: setup.py/requirements.txt 
+A conda environment can be made using the provided env.yaml file. It has 
+a lot of dependencies due to bloat-y modules such as openbabel and psi4. The 
+primary mode of package installation is conda, with pip being the fallback 
+in cases where no conda package exists.
 
 ## Requirements
 1. [Orca](https://orcaforum.cec.mpg.de/) v3
@@ -35,19 +37,15 @@ molecules stored in the 'inchi' format (metatlas_inchi_inchikey.csv).
 The [Fireworks](https://github.com/materialsproject/fireworks)framework
 (developed by Jain, et. al, here at LBL), is used as an interface between the
 slurm queueing system on NERSC and the the mongodb database that is used to
-catalog dataset information. 
+catalog dataset information.
 
-## main.py
-This is the main script to read in the CSV file, process each molecule, 
-and add it to the mongodb database as a Fireworks task to be run on (likely)
-edison later. 
+There is currently a mongodb instance managed and running on NERSC; I have the
+credentials and can share them with whomever requires them.
 
-## metatlas.py
-This is the application that defines special Fireworks tasks for the
-optimization, collection, and addition to the database. This is required
-for Fireworks to know how to submit to queue, what jobs to run, etc. 
+## Defining Fireworks Tasks
+In order to create a firework task that runs a simulation of some kind, one must
+define a new _class_ that derives from FiretaskBase and has a method _run_task_
+associated with it. Example tasks can be seen in `metatlas.py`. `metatlas.py` contains all of the firetasks that have been written thus far. 
 
-# Database
-The dataset is stored in a monogodb database created/maintained/hosted by NERSC.
-I (brandon) currently am the only user with the credentials to access the
-databse. Send me an email if you'd like to access.
+## Using the newly-defined Fireworks Tasks
+Once a new Task has been defined, the next thing is to get them into the Fireworks mongodb via the queueing system. This requires a simple script that reads in a new set of molecules (likely in SMILES format), converting them to an input that can be fed into a Task, and then launched into the queue. `main.py` has a simple example of doing this. 
