@@ -42,13 +42,13 @@ catalog dataset information.
 There is currently a mongodb instance managed and running on NERSC; I have the
 credentials and can share them with whomever requires them.
 
-## Defining Fireworks Tasks
+# Defining Fireworks Tasks
 In order to create a firework task that runs a simulation of some kind, one must
 define a new _class_ that derives from FiretaskBase and has a method _run_task_
 associated with it. Example tasks can be seen in `metatlas.py`. `metatlas.py**
 contains all of the firetasks that have been written thus far.
 
-## Using the newly-defined Fireworks Tasks
+# Using the newly-defined Fireworks Tasks
 **In order for the conda-installed fireworks package to use your newly defined
 Firetasks** that are defined in metatlas.py, you must make a soft link in the
 package's user_objects directory:
@@ -61,24 +61,21 @@ ln -s /path/to/MetAtlas/metatlas.py
 Once a new Task has been defined, the next thing is to get them into the
 Fireworks mongodb via the queueing system. This requires a simple script that
 reads in a new set of molecules (likely in SMILES format), converting them to an
-input that can be fed into a Task, and then launched into the queue. `main.py`
+input that can be fed into a Task, and then launched into the queue. `main.py**
 has a simple example of doing this.
+
 # Running all the calculations on Edison
 
 Turns out this is kinda non-trivial and I've clearly forgotten how to do it. So
 let me refresh my memory and keep track of what's going on so this doesn't
 happen again.
 
+**Remember, you must create the same soft link on the NERSC system in order for it to find your newly made tasks**, see section 'Using the newly-defined...' above.
+
 ## Actually submitting jobs to the queue
 From the MOM node of a compute facility with a queuing system, I basically just
 left a running 'qlaunch' instance that continually keeps the queue with m number
-of jobs.
+of jobs. Make sure you're running this from a scratch directory so as to not
+overload the home disk!
 
 ```qlaunch rapidfire -m 50 --nlaunches infinite```
-
-I'm not sure this is sufficient because this doesn't  necessarily make sure the
-calculations are running in the correct place.
-
-Currently the configuration does look like it works. I'm able to successfully
-submit a job to the SLURM queue, it creates a directory, waits, gets resources,
-and attempts to run but doesn't seem to actually do the calculation
