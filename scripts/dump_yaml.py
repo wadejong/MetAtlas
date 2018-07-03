@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
+"""
+This script takes the information from the locally-running mongodb and
+generates the yaml files that Yu-Hang is currently expecting. This requires
+python3 (since Yu-Hang's MALT is written in py3) but here we included
+local ports of the fireworks launchpad connector for convenience.
 
+For each parent molecule, we construct a single yaml file with fields:
+symbol: list of atomic symbols
+position: list of positions (x,y,z) for each symbol
+
+and a protonation_test field that contains the following for each protonation site
+bond_break_prediction: bool | based on hybridization rules
+fragmented: bool | whether or not the molecule broke apart during optimization
+site: [element, index of parent molecule where protonation occurred]
+"""
 sys.path.append( './malt' )
 from malt.algorithm.topology import Fragmentation
 
@@ -27,6 +41,7 @@ def create_launchpad(db_config_file):
 
     return lpad
 
+
 def get_family(fw):
     parent = glom(fw, 'launches.0.action.stored_data.parent')
     children = glom(fw, 'launches.0.action.stored_data.protonated_children')
@@ -41,10 +56,11 @@ def get_record(parent):
         record['position'] = parent['coords'][-1]
     except:
         record = None
-       
+
     return record
 
-def get_children_results(children):       
+
+def get_children_results(children):
     children_data = []
 
     for child in children:
@@ -69,26 +85,24 @@ def get_children_results(children):
 
     return children_data
 
+
 if __name__ == '__main__':
-	LOCAL_DB_CONFIG = '/home/bkrull/.fireworks/local_db.ini'
-	lpad = create_launchpad(LOCAL_DB_CONFIG)
+    base = '/scratch/users/bkrull/yaml/'
+    frag = Fragmentation()
+    longrange = frag.weights_longrange
 
-	frag = Fragmentation()
-	longrange = frag.weights_longrange
+    LOCAL_DB_CONFIG = '/home/bkrull/.fireworks/local_db.ini'
+    lpad = create_launchpad(LOCAL_DB_CONFIG)
+    completed = lpad.get_fw_ids({'state': 'COMPLETED'})
 
+    for id in tqdm(completed, total=len(completed)):
+        data = lpad.get_fw_dict_by_id(id)
+        name = data['name'].split('/')[-1]
 
-	base = '/scratch/users/bkrull/yaml/'
+        parent, children = get_family(data)
+        record = get_record(parent)
+        record['protonation_tests'] = get_children_results(children)
 
-	completed = lpad.get_fw_ids({'state': 'COMPLETED'})
-		                    
-	for id in tqdm(completed, total=len(completed)):
-	    data = lpad.get_fw_dict_by_id(id)
-	    name = data['name'].split('/')[-1]
-	    
-	    parent, children = get_family(data)
-	    record = get_record(parent)        
-	    record['protonation_tests'] = get_children_results(children)
-		
-	    if record['protonation_tests']:
-		with open(base+'{}.yaml'.format(name), 'w') as f:
-		    yaml.dump(record, f)
+        if record['protonation_tests']:
+            with open(base+'{}.yaml'.format(name), 'w') as f:
+                yaml.dump(record, f)
